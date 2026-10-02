@@ -495,7 +495,7 @@ export function apply(ctx, config) {
                 }
                 if (rs && typeof rs.update === 'function') {
                     try {
-                        await rs.update('net-mon', { netWhitelist: hosts });
+                        await rs.update('dsh-flash-net-mon', { netWhitelist: hosts });
                     }
                     catch (_) { /* memory override already in force */ }
                 }
@@ -542,7 +542,7 @@ export function apply(ctx, config) {
                 }
                 if (rs && typeof rs.update === 'function') {
                     try {
-                        await rs.update('net-mon', { netPluginWhitelist: plugins });
+                        await rs.update('dsh-flash-net-mon', { netPluginWhitelist: plugins });
                     }
                     catch (_) { /* memory override already in force */ }
                 }

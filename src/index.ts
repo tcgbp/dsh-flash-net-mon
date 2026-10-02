@@ -13,7 +13,7 @@
 //
 // Route paths changed from /plugins/dock-flash/network-* to
 // /plugins/dsh-flash-net-mon/network-*.  Settings namespace changed
-// from 'dock-flash' to 'net-mon'.
+// from 'dock-flash' to 'dsh-flash-net-mon'.
 //
 // This half is ESM (`"type": "module"`, and DSH's own entry is ESM too), so
 // `require` does not exist here — every host dependency is a static import
@@ -523,7 +523,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
         try { rs = ctx.get ? ctx.get('remote.settings') ?? (ctx as any).remote?.settings ?? null : null } catch (_) { rs = null }
         if (rs && typeof rs.update === 'function') {
           try {
-            await rs.update('net-mon', { netWhitelist: hosts })
+            await rs.update('dsh-flash-net-mon', { netWhitelist: hosts })
           } catch (_) { /* memory override already in force */ }
         }
         sendJson(res, 200, { ok: true, hosts })
@@ -560,7 +560,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
         try { rs = ctx.get ? ctx.get('remote.settings') ?? (ctx as any).remote?.settings ?? null : null } catch (_) { rs = null }
         if (rs && typeof rs.update === 'function') {
           try {
-            await rs.update('net-mon', { netPluginWhitelist: plugins })
+            await rs.update('dsh-flash-net-mon', { netPluginWhitelist: plugins })
           } catch (_) { /* memory override already in force */ }
         }
         sendJson(res, 200, { ok: true, plugins })
