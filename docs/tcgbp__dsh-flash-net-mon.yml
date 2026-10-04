@@ -32,15 +32,17 @@
 # pull request per release.
 #
 # Submission state, checked 2026-10-04:
-#   * The GitHub mirror now exists: tcgbp/dsh-flash-net-mon, public, default branch
-#     master, carrying the `dsh-plugin` topic. It was created and bootstrapped, and the
-#     sync workflow has run — GitHub's master commit and tree both equal Gitee's.
-#   * STILL MISSING: a Release serving dsh-flash-net-mon.tgz. Until one exists the
-#     `tarball` URL below 404s, so this entry is not ready to submit; cutting the first
-#     release is the only remaining step (procedure in docs/releasing.md).
-#   * The registry's repo-age gate needs a repository at least 1 day old. This one was
-#     created 2026-10-04T02:27Z, so a PR is submittable from 2026-10-05 — and the gate
-#     re-runs itself every 6 hours, so nothing needs pushing or reopening to clear it.
+#   * The GitHub mirror exists: tcgbp/dsh-flash-net-mon, public, default branch master,
+#     carrying the `dsh-plugin` topic; the sync workflow has run, so GitHub's master commit
+#     and tree both equal Gitee's.
+#   * The Release exists: v0.1.0, published 2026-10-04T03:23Z, carrying
+#     dsh-flash-net-mon.tgz (40393 bytes, sha256 196f2997e911…). The `tarball` URL below was
+#     then fetched for real — HTTP 200, 40393 bytes, byte-identical to the local build — so
+#     the entry's own link is proven, not assumed.
+#   * The only thing still open is the registry's repo-age gate, which needs a repository at
+#     least 1 day old: this one was created 2026-10-04T02:27Z, so a PR is submittable from
+#     2026-10-05. The gate re-runs itself every 6 hours, so a PR opened before then turns
+#     green on its own — nothing needs pushing or reopening.
 #   * Everything else is already met: package.json declares the dsh.bundle manifest with
 #     cordis.patch.yml beside it, the tree carries real code, and @deepseek-ai/* packages
 #     are peerDependencies, not dependencies.

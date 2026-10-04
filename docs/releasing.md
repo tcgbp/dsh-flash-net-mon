@@ -156,6 +156,15 @@ and 404 the moment the next release is cut — quietly, and noticed by nobody. K
 asset name version-free means publishing a new Release moves the URL by itself, so the
 registry entry needs no edit and no pull request per release.
 
+**The v0.1.0 tag was moved once, deliberately, before anything was published.** It had been
+created earlier at `ea025f2`, a tree that predates `LICENSE`, the mirror workflow and these
+docs. Nothing had been released from it — npm returns 404 for `dsh-flash-net-mon`, and the
+GitHub repository had no Release — so re-pointing it at the commit actually being shipped
+was a pre-release correction, and both remotes were force-updated. The rule below ("never
+renumber a released version") governs versions that have been published; this one had not
+been, and that is the only thing that made the move legitimate. Once a Release exists, the
+tag is frozen.
+
 **The tarball is gitignored on purpose** (`*.tgz` in `.gitignore`), so it can never be
 committed: a stale tarball in the tree is how a release ships the previous build, and the
 artifact is reproducible from the tagged commit at any time. Nothing else needs editing per
@@ -245,13 +254,15 @@ YAML parses it as a nested mapping key.
 | `github.com/tcgbp/dsh-flash-net-mon` exists — public, default branch `master` | ✅ created 2026-10-04T02:27Z |
 | The mirror has run: GitHub's tree equals Gitee's | ✅ verified by tree hash |
 | Repository carries the `dsh-plugin` topic | ✅ |
-| A Release serves `dsh-flash-net-mon.tgz` | ❌ the only blocker left — cut the first release |
+| A Release serves `dsh-flash-net-mon.tgz` | ✅ `v0.1.0`, published 2026-10-04T03:23Z — fetched back and byte-identical |
 | Repository is at least 1 day old | ⏳ true from 2026-10-05; the gate re-runs itself every 6 hours |
 | `dsh.bundle` manifest + `cordis.patch.yml` | ✅ both present |
 | Real working code; `@deepseek-ai/*` as peer dependencies | ✅ |
 
-Submitting today would hand a reviewer a 404 `tarball`, so the entry waits for the first
-release; the age gate clears itself the next day without anyone pushing anything.
+The entry is ready to submit: the `tarball` URL it carries was fetched for real and returns
+HTTP 200 with the expected bytes. The only open item is the age gate, which clears itself on
+2026-10-05 without anyone pushing anything — a PR opened before then simply goes green on its
+own.
 
 **Publishing to npm is optional** and only changes the install experience (a prebuilt
 install skips the build-approval step). The registry maps the npm package back to the listed
