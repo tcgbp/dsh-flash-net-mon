@@ -7,6 +7,8 @@ inside dock-flash's `apply()`.
 
 Version 0.1.0 · Apache-2.0
 
+**[中文文档](./README.zh-CN.md)**
+
 ## What it registers
 
 **Host half** — `src/index.ts` → `dist/index.js`, a Cordis plugin named
