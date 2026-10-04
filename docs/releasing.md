@@ -49,56 +49,63 @@ Both details of the workflow are load-bearing and must not be "simplified":
 - The workflow file is committed **to Gitee as well**. After a mirror push GitHub's default
   branch is exactly Gitee's tree, so anything living only on GitHub is wiped.
 
-### Bootstrap — one time, before the workflow can run at all
+### Bootstrap — done once, on 2026-10-04
 
-A workflow runs on GitHub's runners, so it must already exist **on GitHub**. It cannot get
-there through itself. As of 2026-10-04 `github.com/tcgbp/dsh-flash-net-mon` returns **404**
-through `api.github.com` — the repository does not exist yet, so this has never been done.
+A workflow runs on GitHub's runners, so it must already exist **on GitHub**, and it cannot
+get there through itself. That was a one-time step, performed on 2026-10-04; it is recorded
+here because it explains why the mirror's history begins with a bootstrap commit, and
+because the same sequence is what a future repository needs:
 
-1. Create an **empty public** repository `tcgbp/dsh-flash-net-mon` on GitHub. Do not add a
-   README, `.gitignore` or licence: the mirror force-pushes every branch, so anything
-   GitHub creates is overwritten anyway.
-2. Put `.github/workflows/sync-from-gitee.yml` on its default branch. The GitHub web UI
-   ("Add file → Create new file") is the simple route; through `api.github.com` — the host
-   that is actually reachable from here — the Contents API does it in one call:
+1. Create an **empty public** repository. Do not add a README, `.gitignore` or licence: the
+   mirror force-pushes every branch, so anything GitHub creates is overwritten anyway.
+2. Put `.github/workflows/sync-from-gitee.yml` on the branch Gitee uses (`master`) — the
+   GitHub web UI ("Add file → Create new file" with `master` as the branch), or the
+   Contents API, which is the route that works while `github.com` git access is blocked
+   here. **On a repository with no commits, `branch: "master"` creates that branch** — the
+   account's default name is `main`, so naming the branch is not optional:
    ```sh
    tok=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
    node -e '
      const fs=require("fs");
-     fs.writeFileSync("wf.json", JSON.stringify({
+     fs.writeFileSync("file.json", JSON.stringify({
        message: "ci: bootstrap the Gitee mirror workflow",
        branch: "master",
        content: fs.readFileSync(".github/workflows/sync-from-gitee.yml").toString("base64"),
      }))'
    curl -sS -X PUT -H "Authorization: Bearer $tok" -H "Accept: application/vnd.github+json" \
      https://api.github.com/repos/tcgbp/dsh-flash-net-mon/contents/.github/workflows/sync-from-gitee.yml \
-     -d @wf.json
-   rm -f wf.json
+     -d @file.json
+   rm -f file.json
    ```
-   The Contents API creates the file, and on a repository with no commits it creates the
-   first commit on the branch named there. The credential must carry the **`workflow`**
-   scope — GitHub refuses to create or update a file under `.github/workflows/` without it
-   (the Git Credential Manager entry for `github.com` normally has it). If the call is
-   rejected for any other reason, use the web UI: it is a one-time step either way.
-3. Add the **`dsh-plugin`** topic to the repository (Settings → Topics). The registry
-   requires it.
-4. Dispatch the workflow once, and confirm the mirror actually ran:
+   ⚠ **Do not reach for the Git Data API here.** `POST /git/blobs` answers
+   `409 Git Repository is empty` until the repository has its first commit, so the
+   blob → tree → commit → ref sequence cannot bootstrap an empty repository at all; the
+   Contents API is the endpoint that can. The credential must carry the **`workflow`**
+   scope, since GitHub refuses to create or update anything under `.github/workflows/`
+   without it.
+3. Set the default branch to `master` (`PATCH /repos/tcgbp/dsh-flash-net-mon
+   {"default_branch":"master"}`). The mirror pushes `refs/heads/*`, so GitHub's default
+   branch has to be the branch Gitee actually uses.
+4. Add the **`dsh-plugin`** topic (Settings → Topics). The registry requires it.
+5. Dispatch the workflow once and confirm the mirror ran:
    ```sh
    tok=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
    curl -sS -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $tok" \
      https://api.github.com/repos/tcgbp/dsh-flash-net-mon/actions/workflows/sync-from-gitee.yml/dispatches \
      -d '{"ref":"master"}'
    ```
-   `204` means the run is queued and it settles in well under a minute. Never echo the
+   `204` means the run is queued, and it settles in well under a minute. Never echo the
    token or let it reach a log or a file: keep it in a variable for the single call, as
    above. And write scratch files inside the repository, not in `/tmp`: this is Git for
    Windows, where bash's `/tmp` is the Windows temp directory but Node resolves a literal
    `/tmp` against the current drive (`C:\tmp`).
-5. Verify through the API, because `git ls-remote` needs the host that is often blocked:
+6. Verify through the API, because `git ls-remote` needs the host that is often blocked:
    compare `commit.tree.sha` from `/repos/tcgbp/dsh-flash-net-mon/commits/master` against the
    local `git rev-parse master^{tree}`. Matching **tree** hashes prove the two repositories
    hold identical content; matching *commit* hashes already imply it, so the tree comparison
-   is what settles it when the hashes differ.
+   is what settles it when the hashes differ. The first run replaces the bootstrap commit
+   entirely — the force-push writes Gitee's tree over it — so a history that starts at a
+   normal Gitee commit afterwards is the expected outcome, not a sign the bootstrap failed.
 
 Gitee's built-in **仓库镜像管理** push mirror is not the mechanism in use — it never
 delivered a commit for the sibling repository. Do not re-enable it: a second, unverified
@@ -231,19 +238,20 @@ is required and must be a single line; and `tarball` must be `https` on GitHub r
 hosting and end in `.tgz`/`.tar.gz`. A description containing `: ` **must be quoted**, or
 YAML parses it as a nested mapping key.
 
-**Prerequisites that are not satisfied yet** (state checked 2026-10-04):
+**Prerequisites** (state checked 2026-10-04):
 
 | Requirement | State |
 |---|---|
-| `github.com/tcgbp/dsh-flash-net-mon` exists | ❌ 404 — bootstrap the mirror first |
-| Repository carries the `dsh-plugin` topic | ❌ add it when the repo is created |
-| A Release serves `dsh-flash-net-mon.tgz` | ❌ cut the first release |
-| Repository is at least 1 day old | ⏳ automatic; the gate re-runs itself every 6 hours and clears on its own |
+| `github.com/tcgbp/dsh-flash-net-mon` exists — public, default branch `master` | ✅ created 2026-10-04T02:27Z |
+| The mirror has run: GitHub's tree equals Gitee's | ✅ verified by tree hash |
+| Repository carries the `dsh-plugin` topic | ✅ |
+| A Release serves `dsh-flash-net-mon.tgz` | ❌ the only blocker left — cut the first release |
+| Repository is at least 1 day old | ⏳ true from 2026-10-05; the gate re-runs itself every 6 hours |
 | `dsh.bundle` manifest + `cordis.patch.yml` | ✅ both present |
 | Real working code; `@deepseek-ai/*` as peer dependencies | ✅ |
 
-Submitting before those are true would hand a reviewer a 404 `url` and a 404 `tarball`, so
-the entry sits here until the mirror is live.
+Submitting today would hand a reviewer a 404 `tarball`, so the entry waits for the first
+release; the age gate clears itself the next day without anyone pushing anything.
 
 **Publishing to npm is optional** and only changes the install experience (a prebuilt
 install skips the build-approval step). The registry maps the npm package back to the listed
