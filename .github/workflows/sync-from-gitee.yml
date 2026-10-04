@@ -1,0 +1,63 @@
+name: Sync from Gitee
+
+# Gitee (gitee.com/lenin.guo/dsh-flash-net-mon) is the authoritative source for
+# this repository; GitHub (github.com/tcgbp/dsh-flash-net-mon) is a mirror of it.
+#
+# Why this workflow exists instead of Gitee's built-in push mirror:
+#   * github.com is intermittently unreachable from the maintainer's machine,
+#     so a local dual-push cannot be relied on to reach GitHub at all;
+#   * Gitee's "仓库镜像管理" push mirror never delivered a commit for the
+#     sibling repository, so it is not the mechanism used here.
+# Running here means the sync executes on GitHub's own runners: it needs no
+# local machine and no stored secret, because both repositories are public and
+# the built-in GITHUB_TOKEN performs the push.
+#
+# IMPORTANT: the refspecs below are explicit rather than `git push --mirror`.
+# --mirror deletes refs the source does not have, which would delete this
+# workflow file from the default branch whenever this file is the only commit
+# GitHub holds that Gitee lacks, silently stopping every future scheduled run.
+# Trade-off: a branch or tag deleted on Gitee is NOT deleted here.
+#
+# Two consequences of that push, both load-bearing:
+#   * This file must be committed to Gitee as well. After a mirror push,
+#     GitHub's default branch is exactly Gitee's tree, so anything living only
+#     on GitHub is wiped — including this workflow.
+#   * It must exist on GitHub before it can ever run, and GitHub cannot get it
+#     from Gitee without a first push. That one-time bootstrap (create the empty
+#     repo, put this file on its default branch through api.github.com, then
+#     dispatch it) is written down in docs/releasing.md.
+
+on:
+  schedule:
+    # Hourly. Scheduled runs are queued and may be delayed; GitHub also
+    # disables schedules after roughly 60 days without repository activity.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-gitee
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror Gitee -> GitHub
+        env:
+          GITEE_URL: https://gitee.com/lenin.guo/dsh-flash-net-mon.git
+          GITHUB_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/tcgbp/dsh-flash-net-mon.git
+        run: |
+          set -euo pipefail
+          git clone --bare "$GITEE_URL" repo.git
+          cd repo.git
+          echo "Gitee master: $(git rev-parse refs/heads/master)"
+          git push --force "$GITHUB_URL" 'refs/heads/*:refs/heads/*'
+          if git for-each-ref --count=1 refs/tags | grep -q .; then
+            git push --force "$GITHUB_URL" 'refs/tags/*:refs/tags/*'
+          else
+            echo "No tags on Gitee; skipping tag sync."
+          fi
+          echo "Done. GitHub master is now $(git rev-parse refs/heads/master)"

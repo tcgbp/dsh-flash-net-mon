@@ -165,7 +165,13 @@ src/index.ts           宿主半      → tsc → dist/index.js
 lib/client.js          浏览器半    → 无构建，直接编辑
 dist/index.js          编译产物 —— 故意入库
 cordis.patch.yml       bundle 层：把宿主行插进 profile
+.github/workflows/     sync-from-gitee.yml —— Gitee → GitHub 镜像
+docs/releasing.md      镜像引导、发版手册、dsh-market 上架
+docs/tcgbp__dsh-flash-net-mon.yml   dsh-market 登记项（提交用）
 ```
+
+Gitee 是权威仓库，也是本地唯一配置的 remote；GitHub（`github.com/tcgbp/dsh-flash-net-mon`）
+是它的镜像，同时托管 dsh-market 登记项所指向的 Release tarball。
 
 ## 隐私与限制（有意为之）
 

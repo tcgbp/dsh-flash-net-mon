@@ -238,7 +238,14 @@ src/index.ts          HOST half      → tsc → dist/index.js
 lib/client.js         BROWSER half   → no build, edited directly
 dist/index.js         compiled host half — tracked on purpose
 cordis.patch.yml      bundle layer: inserts the host row into the profile
+.github/workflows/    sync-from-gitee.yml — the Gitee → GitHub mirror
+docs/releasing.md     mirror bootstrap, release runbook, dsh-market listing
+docs/tcgbp__dsh-flash-net-mon.yml   the dsh-market submission entry to PR
 ```
+
+Gitee is the authoritative repository and the only remote configured; GitHub
+(`github.com/tcgbp/dsh-flash-net-mon`) is a mirror of it and the host of the release
+tarball the dsh-market entry points at.
 
 ## Privacy and limits (deliberate)
 

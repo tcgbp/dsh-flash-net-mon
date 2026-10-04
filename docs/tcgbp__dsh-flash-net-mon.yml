@@ -1,0 +1,61 @@
+# dsh-market submission entry for dsh-flash-net-mon.
+#
+# To submit: copy this file to
+#   <your-fork-of-awesome-dsh-plugin>/data/plugins/tcgbp__dsh-flash-net-mon.yml
+# and open a PR against https://github.com/awesome-dsh-plugin/awesome-dsh-plugin.
+# After it is merged, update it here rather than in a second place.
+#
+# Rules enforced by the registry's own scripts/lib/entries.mjs::validateEntries
+# (read from the registry on 2026-10-04) and by contributing.md:
+#   - only these keys: url, name, category, description, tarball
+#     (no `npm:` key — the npm mapping is resolved from the repository)
+#   - filename must equal slugFor(url): <owner>__<repo>.yml
+#   - `name` is the link text, so an owner/repo name must match `url`
+#   - category must be one of the registry's CAT_IDS
+#   - description.en is required and single-line; description.zh is optional
+#   - a description containing ": " must be quoted, or YAML parses it as a
+#     nested mapping key
+#   - tarball must be https on GitHub release hosting and end in .tgz/.tar.gz
+#     (docs/releasing.md's validator run reports 0 problems for this file)
+#
+# Category: `security`. The entry is about outbound requests — an audit trail,
+# a risk score, and allowlists that suppress it. The same code also registers
+# two providers into dock-flash's alert registry, which is `notify`'s subject;
+# the registry treats a near-miss category as maintenance, not a rejection, so
+# `security` is the closest one rather than a claim.
+#
+# The tarball is deliberately the version-free releases/latest/download/ URL
+# with a version-free asset name. `latest` is resolved per request but the
+# filename is taken literally, so an asset named dsh-flash-net-mon-<version>.tgz
+# would 404 on the next release: keep the asset named dsh-flash-net-mon.tgz and
+# publishing a new Release moves this URL by itself, with no entry edit and no
+# pull request per release.
+#
+# Submission state, checked 2026-10-04 through api.github.com:
+#   * github.com/tcgbp/dsh-flash-net-mon does NOT exist yet (HTTP 404). The
+#     Gitee repository is the only one; mirroring is set up but never ran, so
+#     there is nothing to submit yet — the url and tarball below would both
+#     404 for a reviewer. Prerequisites, in order:
+#       1. create the empty GitHub repo and bootstrap the mirror
+#          (.github/workflows/sync-from-gitee.yml; steps in docs/releasing.md)
+#       2. add the `dsh-plugin` topic to it (contributing.md requires it)
+#       3. cut a Release carrying dsh-flash-net-mon.tgz, so the tarball URL works
+#       4. wait one day: the registry's automatic age gate needs a repo that is
+#          at least 1 day old, and it re-runs itself until that clears
+#   * the other requirements are already met: package.json declares the
+#     dsh.bundle manifest with cordis.patch.yml beside it, the tree carries real
+#     code, and @deepseek-ai/* packages are peerDependencies, not dependencies.
+#
+# Optional, recommended by contributing.md: publishing to npm skips the
+# build-approval step for users. The registry maps the npm package back to this
+# repository by matching the published package's own `repository` field against
+# the listed repo, so such a package's `repository` must point at
+# github.com/tcgbp/dsh-flash-net-mon (a Gitee-only URL does not match and the
+# mapping is simply left absent — listing does not depend on it).
+url: https://github.com/tcgbp/dsh-flash-net-mon
+name: tcgbp/dsh-flash-net-mon
+category: security
+description:
+  en: 'Network monitor, outbound-request audit and alert provider for dock-flash: registers a connectivity heartbeat and an audit alert provider plus its own quick-control switch through the quickControl and dockFlashAlerts services, and, while the audit is enabled, wraps global fetch to record metadata-only outbound requests (method, host, path, byte counts, status, duration, TLS) with a 0-100 risk score, configurable warn and danger thresholds, host and plugin allowlists, and a paged audit panel with a request stream, an alert view and whitelist management.'
+  zh: 'dock-flash 的网络监控与出站审计插件：通过 quickControl 与 dockFlashAlerts 服务注册连通性心跳告警提供者、审计告警提供者和自己的快捷开关；启用审计后包装全局 fetch，只记录元数据（方法、主机、路径、字节数、状态、耗时、是否 TLS）并给出 0–100 风险分，支持可配置的可疑与危险阈值、主机与插件白名单，以及带分页的审计面板（请求流、告警、白名单管理）。'
+tarball: https://github.com/tcgbp/dsh-flash-net-mon/releases/latest/download/dsh-flash-net-mon.tgz
