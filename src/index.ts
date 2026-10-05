@@ -124,7 +124,13 @@ function _pluginIdFromStack(): string | null {
   } catch (_) {
     return null
   }
-  const re = /node_modules[\\/]+([^\\/]+)/g
+  // Capture the full package path segment after `node_modules/`, handling
+  // scoped packages: a plain package is `foo`, a scoped one is `@scope/name`
+  // (its on-disk layout is `node_modules/@scope/name/...`). Group 1 therefore
+  // is the whole package id — e.g. `@michengai/dsh-archive-manager`. Without
+  // the scope branch we would stop at the first `/` and attribute traffic to
+  // just the scope (`@michengai`) instead of the real bundle.
+  const re = /node_modules[\\/]+((?:@[^\\/]+[\\/]+)?[^\\/]+)/g
   let m: RegExpExecArray | null
   // Walk every frame, preferring the outermost (caller-most) plugin path, i.e.
   // the last match that is a real package rather than a loader shim.
@@ -134,6 +140,10 @@ function _pluginIdFromStack(): string | null {
     // Skip the common well-known loader/runtime names that sit between the real
     // caller and us, so we attribute to the plugin that actually issued the call.
     if (/^(@deepseek-ai|cordis|undici|node:|internal)/i.test(pkg)) continue
+    // Also skip an isolated scope dir (e.g. `node_modules/@scope/` with no
+    // package under it, which can appear in some install layouts) — there is
+    // no real package to attribute the request to yet.
+    if (/^@[^\\/]+[\\/]?$/.test(pkg)) continue
     candidate = pkg
   }
   return candidate
