@@ -34,7 +34,8 @@
     "dock-flash": ">=1.6.0-0 <2.0.0-0"
   },
   "peerDependenciesMeta": {
-    "dock-base": { "optional": true }
+    "dock-base": { "optional": true },
+    "dock-flash": { "optional": true }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
