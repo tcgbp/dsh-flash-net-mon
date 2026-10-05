@@ -169,7 +169,7 @@ class NetworkMonitor {
         }
         return { risk: Math.min(100, risk), flags };
     }
-    record(input) {
+    record(input, preResolvedPluginId) {
         let host = '?';
         let pathname = '';
         try {
@@ -182,7 +182,12 @@ class NetworkMonitor {
         }
         const firstSeen = !this._seenHosts.has(host);
         this._seenHosts.set(host, (this._seenHosts.get(host) || 0) + 1);
-        const pluginId = resolvePluginId();
+        // Use the pre-resolved pluginId when available — the caller captures it
+        // synchronously before `await fetch()` so the stack trace is intact.
+        // After `await`, the caller's frames are gone and _pluginIdFromStack()
+        // misattributes scoped packages (e.g. resolves `@michengai` instead of
+        // `@michengai/dsh-archive-manager`).
+        const pluginId = preResolvedPluginId || resolvePluginId();
         const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen);
         const entry = {
             seq: ++this._seq,
@@ -267,6 +272,10 @@ function installRequestTracer() {
         const method = (init && init.method) || (typeof input === 'string' ? 'GET' : (input && input.method) || 'GET');
         const url = typeof input === 'string' ? input : (input && input.url) || '';
         const reqBytes = _estimateReqBytes(init && init.body);
+        // Capture pluginId synchronously — before `await` — so the call stack
+        // still contains the caller's frames.  After `await`, only the microtask
+        // resume frame remains and _pluginIdFromStack() loses the real caller.
+        const callerPluginId = resolvePluginId();
         const started = Date.now();
         let status = 0;
         let resBytes = -1;
@@ -283,7 +292,7 @@ function installRequestTracer() {
             const end = Date.now();
             if (_networkMonitor) {
                 try {
-                    _networkMonitor.record({ method, url, reqBytes, resBytes, status, durationMs: end - started, tls });
+                    _networkMonitor.record({ method, url, reqBytes, resBytes, status, durationMs: end - started, tls }, callerPluginId);
                 }
                 catch (_) { }
             }
@@ -293,7 +302,7 @@ function installRequestTracer() {
             const end = Date.now();
             if (_networkMonitor) {
                 try {
-                    _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: end - started, tls });
+                    _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: end - started, tls }, callerPluginId);
                 }
                 catch (_) { }
             }
