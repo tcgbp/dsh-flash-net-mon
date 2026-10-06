@@ -1,6 +1,6 @@
 {
   "name": "dsh-flash-net-mon",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Network monitor & outbound audit provider for dock-flash — registers a network-alert provider and the opt-in network audit (fetch tracer) via ctx.get('dockFlashAlerts').",
   "license": "Apache-2.0",
   "type": "module",
