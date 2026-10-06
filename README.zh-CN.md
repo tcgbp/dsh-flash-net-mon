@@ -141,8 +141,10 @@
 ## 安装
 
 ```sh
-dsh plugin --profile <profile> add <path-to-this-checkout>
+dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
+
+需要 **dock-flash ≥ 1.6**：它提供 `quickControl`、`dockFlashAlerts` 服务与 `dock-flash:ready` 事件，任何 2.x 都满足。安装后请重启 DSH。
 
 `cordis.patch.yml` 只插入宿主行。注意它的 `name` 是**包名**，通过 profile 的 `node_modules` 解析，**绝不是相对路径**。
 

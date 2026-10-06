@@ -11,6 +11,11 @@
     "./package.json": "./package.json"
   },
   "files": ["dist", "lib", "cordis.patch.yml", "README.md", "README.zh-CN.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tcgbp/dsh-flash-net-mon.git"
+  },
+  "homepage": "https://github.com/tcgbp/dsh-flash-net-mon#readme",
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {

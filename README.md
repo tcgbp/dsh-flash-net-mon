@@ -207,8 +207,12 @@ dock-flash itself uses towards dock-base.
 ## Install
 
 ```sh
-dsh plugin --profile <profile> add <path-to-this-checkout>
+dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
+
+Requires **dock-flash ≥ 1.6** — it supplies the `quickControl` and
+`dockFlashAlerts` services and the `dock-flash:ready` event, and any 2.x satisfies it.
+Restart DSH after installing.
 
 `cordis.patch.yml` inserts the host row. Its `name` is a **package name**, resolved
 through the profile's `node_modules` — **never a relative path**.
