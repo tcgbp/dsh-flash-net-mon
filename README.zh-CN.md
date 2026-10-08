@@ -1,6 +1,6 @@
 # dsh-flash-net-mon
 
-> [dock-flash](https://gitee.com/lenin.guo/dock-flash) 的**网络监控 / 出站审计**伴生插件 —— 它自己注册告警提供者（alert provider）和自己的面板开关，而不是挤进 dock-flash 的 `apply()` 里。
+> [dsh-flash](https://gitee.com/lenin.guo/dsh-flash) 的**网络监控 / 出站审计**伴生插件 —— 它自己注册告警提供者（alert provider）和自己的面板开关，而不是挤进 dsh-flash 的 `apply()` 里。
 
 版本 0.1.0 · Apache-2.0
 
@@ -10,7 +10,7 @@
 
 两块能力，分别属于宿主（Host）和浏览器（Browser）：
 
-1. **网络监控（连通性心跳）** —— 定时探测 `/plugins/dock-flash/health`，把「慢」和「超时」变成 dock-flash 的告警。
+1. **网络监控（连通性心跳）** —— 定时探测 `/plugins/dock-flash/health`，把「慢」和「超时」变成 dsh-flash 的告警。
 2. **出站审计（fetch 追踪）** —— 可选地包装全局 `fetch`，记录**元数据级**的出站请求清单，按风险分给出「正常 / 可疑 / 危险」分级，并提供筛选、白名单与风险评分说明。
 
 审计是**默认关闭**的（`netAuditEnabled: false`，且该字段是 `volatile()`，每次 DSH 重启都会回到默认值）。
@@ -37,15 +37,15 @@
 | 告警提供者 `dsh-flash-net-mon:network-audit`（审计告警） | `ctx.get('dockFlashAlerts').registerProvider()` |
 | 面板开关 `dsh-flash-net-mon:monitor-network` | `ctx.get('quickControl').registerSwitch()` |
 
-开关属性：`type: 'toggle'`、`group: 'system'`、`cluster: 'system-alerts'`、`order: 60`、`icon: 'signal'`。它的**可见性跟随 dock-flash 的 `dock-flash:system-alerts` 总开关** —— 告警注册表没开时，这个开关也没有意义。
+开关属性：`type: 'toggle'`、`group: 'system'`、`cluster: 'system-alerts'`、`order: 60`、`icon: 'signal'`。它的**可见性跟随 dsh-flash 的 `dock-flash:system-alerts` 总开关** —— 告警注册表没开时，这个开关也没有意义。
 
-> **双发现模式**：`ctx.get('quickControl')` / `ctx.get('dockFlashAlerts')` 是异步解析的，所以注册走三条路 —— 监听 `dock-flash:ready` 事件（应对 dock-flash 比我们晚加载）、同步 `ctx.get()` 主动检查（应对它比我们早加载）、以及最多 15 次 × 200ms 的短轮询兜底。任一成功即置位 `_registered`，不重复注册。
+> **双发现模式**：`ctx.get('quickControl')` / `ctx.get('dockFlashAlerts')` 是异步解析的，所以注册走三条路 —— 监听 `dock-flash:ready` 事件（应对 dsh-flash 比我们晚加载）、同步 `ctx.get()` 主动检查（应对它比我们早加载）、以及最多 15 次 × 200ms 的短轮询兜底。任一成功即置位 `_registered`，不重复注册。
 
 ## 面板与开关怎么用
 
 ### 开关
 
-在 dock-flash 快捷面板的「⚙️ 系统 → 系统告警」簇里找到 **网络监控**：
+在 dsh-flash 快捷面板的「⚙️ 系统 → 系统告警」簇里找到 **网络监控**：
 
 - 副标题实时显示 `已开启` / `已关闭`；
 - 打开开关会写 `netAuditEnabled = true` 到宿主，宿主随即安装 fetch 追踪器；
@@ -78,7 +78,7 @@
 
 工具栏：子标签切换、按插件筛选（选项来自当前已加载的条目）、按风险筛选（正常 / 可疑 / 危险）、**暂停 / 继续**（停掉轮询，但后端仍在记录，因此继续后会看到期间积累的条目）、**清空**（`DELETE /network-log`，清掉后端的环形缓冲与评分状态，而不只是清屏 —— 清空后「请求流」与「告警」都会变空）。自动滚动是内部行为：未暂停且开着自动滚动时，列表会跟到最新一页。
 
-**告警通知走的是另一条路**：`dsh-flash-net-mon:network-audit` 提供者轮询 `GET /network-alerts`（间隔 `max(netPollMin, netPollBase)`），把新增的高风险请求推给 dock-flash 的告警注册表。它按 `seq` 去重，同一条不会重复弹出，还会跳过主机白名单 / 插件白名单里的命中项。
+**告警通知走的是另一条路**：`dsh-flash-net-mon:network-audit` 提供者轮询 `GET /network-alerts`（间隔 `max(netPollMin, netPollBase)`），把新增的高风险请求推给 dsh-flash 的告警注册表。它按 `seq` 去重，同一条不会重复弹出，还会跳过主机白名单 / 插件白名单里的命中项。
 
 白名单写入走两路：内存里立即生效，同时通过 `ctx.remote.settings` 持久化到 `dsh-flash-net-mon` 命名空间。客户端与上面两条 `network-*-whitelist` 路由用的是同一份设置，所以哪边先写都会被后写的覆盖；设置服务不可用时，内存里的覆盖仍然生效。
 
@@ -118,7 +118,7 @@
 - 请求体上限 4096 字节，超限/空/无法解析一律按「未提供覆盖」处理；
 - 白名单路由是给**够不到设置服务的工具**准备的便利入口，客户端本身走 `ctx.remote.settings`；
 - 审计关闭时这些路由**仍然注册**，只是返回空列表（此时不存在监视器实例），所以已经打开的面板不会 500；
-- 心跳提供者轮询的 `/plugins/dock-flash/health` **属于 dock-flash**，不在这里（K6）。
+- 心跳提供者轮询的 `/plugins/dock-flash/health` **属于 dsh-flash**，不在这里（K6）。
 
 ## 心跳告警（网络监控）
 
@@ -132,11 +132,11 @@
 | 包 | 类型 | 用途 |
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | 插件框架 |
-| `dock-flash` `>=1.6.0-0 <2.0.0-0` | peer | 提供 `quickControl` 与 `dockFlashAlerts` 服务 |
+| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | 提供 `quickControl` 与 `dockFlashAlerts` 服务 |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer，可选 | 仅工作台模式需要 |
 | `@deepseek-ai/schemastery` | 直接依赖 | 设置 schema（`volatile()`） |
 
-它**不硬依赖** dock-flash：服务全部通过 `ctx.get(...)` 解析，兼容性由 **peer 范围**声明 —— 与 dock-flash 对 dock-base 的做法一致。
+它**不硬依赖** dsh-flash：服务全部通过 `ctx.get(...)` 解析，兼容性由 **peer 范围**声明 —— 与 `dock-flash`（v3 dock-base 适配器）对 `dock-base` 的做法一致。
 
 ## 安装
 
@@ -144,7 +144,7 @@
 dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
 
-需要 **dock-flash ≥ 1.6**：它提供 `quickControl`、`dockFlashAlerts` 服务与 `dock-flash:ready` 事件，任何 2.x 都满足。安装后请重启 DSH。
+需要 **dsh-flash ≥ 1.0**：它提供 `quickControl`、`dockFlashAlerts` 服务与 `dock-flash:ready` 事件，任何 1.x 都满足。dock-base 工作台里的面板 UI 来自 `dock-flash` v3 适配器（它把核心的面板挂载进工作台）。安装后请重启 DSH。
 
 `cordis.patch.yml` 只插入宿主行。注意它的 `name` 是**包名**，通过 profile 的 `node_modules` 解析，**绝不是相对路径**。
 

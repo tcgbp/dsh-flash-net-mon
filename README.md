@@ -1,8 +1,8 @@
 # dsh-flash-net-mon
 
 > The **network monitor / outbound audit** companion plugin for
-> [dock-flash](https://gitee.com/lenin.guo/dock-flash) — it registers its own alert
-> providers and its own panel switch instead of living inside dock-flash's `apply()`.
+> [dsh-flash](https://gitee.com/lenin.guo/dsh-flash) — it registers its own alert
+> providers and its own panel switch instead of living inside dsh-flash's `apply()`.
 
 Version 0.1.0 · Apache-2.0
 
@@ -13,7 +13,7 @@ Version 0.1.0 · Apache-2.0
 Two capabilities, one in each half of the plugin:
 
 1. **Network monitor (connectivity heartbeat)** — polls `/plugins/dock-flash/health`
-   on a schedule and turns "slow" and "timed out" into dock-flash alerts.
+   on a schedule and turns "slow" and "timed out" into dsh-flash alerts.
 2. **Outbound audit (fetch tracing)** — optionally wraps the global `fetch` and
    records a **metadata-level** list of outbound requests, grades each one
    normal / suspect / dangerous by risk score, and offers filtering, whitelists and
@@ -46,14 +46,14 @@ injected lazily — `settings` for preferences, `webServer` for the routes.
 | Panel switch `dsh-flash-net-mon:monitor-network` | `ctx.get('quickControl').registerSwitch()` |
 
 Switch properties: `type: 'toggle'`, `group: 'system'`, `cluster: 'system-alerts'`,
-`order: 60`, `icon: 'signal'`. Its **visibility follows dock-flash's
+`order: 60`, `icon: 'signal'`. Its **visibility follows dsh-flash's
 `dock-flash:system-alerts` master toggle** — with the alert registry switched off,
 this switch has nothing to drive. Its subtitle carries the current on/off state, and
 the plugin notifies the row to re-render when that state changes.
 
 > **Dual discovery.** `ctx.get('quickControl')` / `ctx.get('dockFlashAlerts')` resolve
 > asynchronously, so registration has three routes: listening for the
-> `dock-flash:ready` event (for when dock-flash loads after us), a synchronous
+> `dock-flash:ready` event (for when dsh-flash loads after us), a synchronous
 > `ctx.get()` check (for when it loaded before us), and a short fallback poll — up to
 > 15 attempts, 200 ms apart. The first one to succeed sets `_registered`, so nothing
 > registers twice.
@@ -62,7 +62,7 @@ the plugin notifies the row to re-render when that state changes.
 
 ### The switch
 
-In dock-flash's quick panel, under **⚙️ System → System Alerts**, find **Network
+In dsh-flash's quick panel, under **⚙️ System → System Alerts**, find **Network
 Monitor**:
 
 - the subtitle shows the live on/off state;
@@ -121,7 +121,7 @@ internal: while not paused and auto-scroll is on, the list follows the newest pa
 **Alert notifications take a different route.** The
 `dsh-flash-net-mon:network-audit` provider polls `GET /network-alerts` (at the same
 `max(netPollMin, netPollBase)` cadence) and pushes newly seen high-risk requests into
-dock-flash's alert registry. It de-duplicates by `seq`, so the same request never
+dsh-flash's alert registry. It de-duplicates by `seq`, so the same request never
 raises twice, and it skips anything matched by the host or plugin whitelist.
 
 Whitelist writes go two ways: effective in memory immediately, and persisted through
@@ -178,7 +178,7 @@ Behaviour worth knowing:
   service**; the client itself goes through `ctx.remote.settings`.
 - With auditing off these routes **stay registered** and answer empty lists (there is
   no monitor instance), so a panel that is already open never 500s.
-- The `/plugins/dock-flash/health` route the heartbeat polls **belongs to dock-flash**,
+- The `/plugins/dock-flash/health` route the heartbeat polls **belongs to dsh-flash**,
   not to this package.
 
 ## Heartbeat alerts (network monitor)
@@ -196,13 +196,13 @@ Behaviour worth knowing:
 | Package | Type | Purpose |
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | the plugin framework |
-| `dock-flash` `>=1.6.0-0 <2.0.0-0` | peer | supplies the `quickControl` and `dockFlashAlerts` services |
+| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | supplies the `quickControl` and `dockFlashAlerts` services |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer, optional | workbench mode only |
 | `@deepseek-ai/schemastery` | dependency | the settings schema (`volatile()`) |
 
-There is **no hard dependency** on dock-flash: every service is resolved through
+There is **no hard dependency** on dsh-flash: every service is resolved through
 `ctx.get(...)`, and compatibility is declared by the **peer range** — the same shape
-dock-flash itself uses towards dock-base.
+`dock-flash` (the v3 dock-base adapter) uses towards `dock-base`.
 
 ## Install
 
@@ -210,8 +210,10 @@ dock-flash itself uses towards dock-base.
 dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
 
-Requires **dock-flash ≥ 1.6** — it supplies the `quickControl` and
-`dockFlashAlerts` services and the `dock-flash:ready` event, and any 2.x satisfies it.
+Requires **dsh-flash ≥ 1.0** — it supplies the `quickControl` and
+`dockFlashAlerts` services and the `dock-flash:ready` event, and any 1.x satisfies it.
+The dock-base workbench UI comes from the `dock-flash` v3 adapter, which mounts the
+core's panel into the workbench.
 Restart DSH after installing.
 
 `cordis.patch.yml` inserts the host row. Its `name` is a **package name**, resolved
