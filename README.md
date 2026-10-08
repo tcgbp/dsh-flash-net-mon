@@ -103,13 +103,16 @@ happens in the browser.
 - **Requests** — 10 rows per page, with page info and previous/next at the bottom.
   Columns: method, host, path, status (2xx green / 4xx yellow / 5xx red), risk,
   duration; time, request/response sizes, TLS, plugin and flags live in the
-  **details** overlay that opens when a row is expanded.
+  **details** block that expands **inline** when a row is clicked (click the same row
+  again or press Escape to collapse it; the rest of the modal stays visible).
 - **Alerts** — the rows of that same data whose risk is ≥ `netSuspectWarn`, coloured by
   risk (≥ `netSuspectErr` takes the danger colour). This tab is **not** a second data
   stream.
-- **Whitelist** — switch between the host and plugin views, remove entries with ✕, or
-  add one straight from the details overlay ("add host to whitelist" / "add plugin to
-  whitelist").
+- **Whitelist** — switch between the host and plugin views, remove entries with ✕. The
+  host view also has "common services (one click)" chips and a **read-only**
+  "auto-trusted" row; the plugin view lists the plugins seen in the log (click Trust to
+  add one) plus a manual input. The details block still offers "add host to whitelist" /
+  "add plugin to whitelist".
 
 Toolbar: sub-tab switch, plugin filter (options come from the currently loaded
 entries), risk filter (normal / suspect / dangerous), **pause / resume** (stops polling
@@ -129,6 +132,15 @@ Whitelist writes go two ways: effective in memory immediately, and persisted thr
 `network-*-whitelist` routes use that same setting, so whichever writes second wins; if
 the settings service is unavailable, the in-memory override still applies.
 
+"Common services (one click)" offers 15 known API hosts (exact host names such as
+`api.openai.com` or `dashscope.aliyuncs.com`); one click adds that host to the user's
+whitelist. Anything already covered is greyed out and tagged with where the coverage
+comes from ("added", "built-in", or "configured endpoint"). The list deliberately
+contains **no host that serves user content** (`github.io`, `raw.githubusercontent.com`,
+`*.s3.amazonaws.com`, `*.cloudfront.net`, …) — trusting one of those would open the audit
+to every third-party payload fetched through it. It is a set of buttons, never an
+automatic write.
+
 ## Risk scoring
 
 Every outbound request scores 0–100:
@@ -136,19 +148,42 @@ Every outbound request scores 0–100:
 | Factor | Adds |
 | --- | --- |
 | Unknown host: not on the built-in trusted list / user host whitelist, and not from a trusted plugin (baseline) | +30 |
-| First time this host is seen (`new-host`) | +15 |
+| First time this host is seen (`new-host`) | +5 |
 | Large upload: `POST`/`PUT`/`PATCH` with a body over 1 KB (`large-upload`) | +25 |
 | Plaintext: not `https:` (`plaintext`) | +20 |
 | High frequency: the same unknown host seen ≥ 3 times (`high-frequency`) | +15 |
 | Ceiling | 100 |
 
-**Trusted means exempt.** If the host is trusted (built-in list or user whitelist)
-**or** the plugin is trusted, the risk is 0 and no flags are raised — but the request
-**is still recorded** in the request list.
+`new-host` is +5 rather than +15: the seen-host counter is memory-only, so after a
+restart every host counts as "first time"; 30 + 5 = 35 stays below `netSuspectWarn`
+(40 by default), so an ordinary new connection no longer alerts on its own (the flag is
+still recorded). A first contact that also uploads or is plaintext still alerts
+(60 / 55).
+
+A URL that names no host (a relative one, e.g. `/x`) is not scored at all: it records 0
+with a `relative-url` flag and stays in the log, and it is kept **out** of the host
+frequency counter — otherwise every relative URL would pile onto the same `?` key and no
+whitelist entry could ever match it.
+
+**Trusted means exempt.** If the host is trusted (built-in list, user whitelist, or an
+auto-trusted endpoint) **or** the plugin is trusted, the risk is 0 and no flags are
+raised — but the request **is still recorded** in the request list.
 
 Built-in trusted hosts: `www.google.com` (the default connectivity test target),
 `api.deepseek.com`, `chat.deepseek.com`. Without an explicit override
 `HOST_ALLOW_UNKNOWN = false`, i.e. **every unlisted host starts out suspect**.
+
+Beyond that hard-coded list, the endpoints **DSH itself is configured to call** are
+trusted too: any field named `baseURL`/`base_url`/`apiBase`/`api_base`/`endpoint` in what
+`settings.describe()` returns (an LLM provider's `baseURL`, including the per-model
+nesting `dsh-llm-pi-ai` uses), plus the `DEEPSEEK_BASE_URL` / `OPENAI_BASE_URL` /
+`ANTHROPIC_BASE_URL` environment variables. This trust is **never** written into the
+user's whitelist (a declaration the user made must stay distinguishable from what we
+inferred), and it matches **exactly**: pointing a provider at `gw.example.com:8443` does
+not trust `sub.gw.example.com`, and an `http://` endpoint is only accepted on loopback
+(`localhost`, `127.0.0.1`, `[::1]`, `*.localhost`). It is recomputed whenever settings
+change, so removing a provider removes the trust. The whitelist tab's read-only
+"auto-trusted" row shows exactly which hosts are in force.
 
 A user whitelist entry covers **its subdomains** (adding `example.com` trusts
 `api.example.com`), matching the semantics `NO_PROXY` uses elsewhere.
@@ -167,6 +202,7 @@ bundler shim or a runtime wrapper); treat it as best effort.
 | `GET` | `/plugins/dsh-flash-net-mon/network-log` | Paged snapshot, newest first; `?offset=` `&limit=` (1–500, default 100); returns `{ entries, offset, limit, total }` |
 | `DELETE` | `/plugins/dsh-flash-net-mon/network-log` | Clears the monitor history (ring buffer + sequence + host frequency) |
 | `GET` | `/plugins/dsh-flash-net-mon/network-alerts` | Requests with risk ≥ `netSuspectWarn`, returned as `{ alerts }`, newest first |
+| `GET` | `/plugins/dsh-flash-net-mon/network-whitelist` | Read-only view, returns `{ hosts, builtin, endpoints }`: the user list, the built-in trusted hosts, and the endpoints derived from DSH's configuration |
 | `POST` | `/plugins/dsh-flash-net-mon/network-whitelist` | Body `{ "hosts": ["a.com", ...] }`, each validated as a host name (port allowed); writes memory + the setting |
 | `POST` | `/plugins/dsh-flash-net-mon/network-plugin-whitelist` | Body `{ "plugins": ["pkg-name", ...] }`, same, keyed by plugin id |
 

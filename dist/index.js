@@ -95,6 +95,68 @@ const BUILTIN_TRUSTED_HOSTS = new Set([
 /** Default guard: without an explicit override every host is suspect. */
 const HOST_ALLOW_UNKNOWN = false;
 /**
+ * Field names that carry an API endpoint in a provider's settings. Matched
+ * case-insensitively against the keys of every namespace `settings.describe()`
+ * returns: DSH's own providers name the field `baseURL` (dsh-llm-deepseek,
+ * dsh-llm-pi-ai, …) and a user-configured gateway uses the same key.
+ */
+const ENDPOINT_FIELD_NAMES = new Set(['baseurl', 'base_url', 'apibase', 'api_base', 'endpoint']);
+/** Environment fallbacks for the same endpoints — the SDKs' own conventions. */
+const ENDPOINT_ENV_VARS = ['DEEPSEEK_BASE_URL', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL'];
+/** Loopback names: an `http://` endpoint there is this machine, not the network. */
+function _isLoopbackHost(h) {
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h.endsWith('.localhost');
+}
+/**
+ * Turn one configured endpoint into a trusted host, or null when we are not
+ * willing to trust it on the user's behalf.
+ *
+ * https is accepted anywhere; plain http only for loopback, because a local
+ * gateway is still DSH's own traffic. The result is the exact `host` including
+ * a non-default port — never an apex domain: trusting `example.com` here would
+ * silently cover every subdomain of a host the user merely pointed an SDK at.
+ */
+function _endpointHost(raw) {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    if (!s)
+        return null;
+    let u;
+    try {
+        u = new URL(s);
+    }
+    catch (_) {
+        return null;
+    }
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && _isLoopbackHost(u.hostname.toLowerCase())))
+        return null;
+    if (!u.host)
+        return null;
+    return u.host.toLowerCase();
+}
+/**
+ * Collect endpoint hosts from a settings value tree. Bounded depth, because a
+ * provider config can nest a `baseURL` per model entry (dsh-llm-pi-ai does):
+ * a flat top-level scan would miss the gateway that is actually in use.
+ */
+function _collectEndpointHosts(node, depth, out) {
+    if (depth > 4 || node == null || typeof node !== 'object')
+        return;
+    if (Array.isArray(node)) {
+        for (const item of node)
+            _collectEndpointHosts(item, depth + 1, out);
+        return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+        if (ENDPOINT_FIELD_NAMES.has(key.toLowerCase())) {
+            const h = _endpointHost(value);
+            if (h)
+                out.add(h);
+            continue;
+        }
+        _collectEndpointHosts(value, depth + 1, out);
+    }
+}
+/**
  * The in-memory auditor. A ring buffer capped at `cap` entries (oldest dropped
  * on overflow) plus a suspicion scorer. Lost on restart — intentional: network
  * audit history is session-scoped, not durable user data.
@@ -107,6 +169,8 @@ class NetworkMonitor {
     _userTrusted = new Set();
     /** Resolved once; the mutable set of user-trusted plugin IDs. */
     _pluginTrusted = new Set();
+    /** Hosts DSH itself is configured to call (provider endpoints); refreshed on settings change. */
+    _endpointTrusted = new Set();
     _seenHosts = new Map();
     constructor(_cap) {
         this._cap = _cap;
@@ -122,6 +186,15 @@ class NetworkMonitor {
     setPluginTrusted(plugins) {
         this._pluginTrusted = new Set((plugins || []).map((p) => String(p).toLowerCase()));
     }
+    /**
+     * Hosts derived from DSH's own configuration (LLM provider `baseURL`,
+     * `DEEPSEEK_BASE_URL`, …). Matched EXACTLY — unlike the user's list there is
+     * no apex/subdomain rule here, because a configured endpoint is one concrete
+     * server, not a grant over its whole domain.
+     */
+    setEndpointTrusted(hosts) {
+        this._endpointTrusted = new Set((hosts || []).map((h) => String(h).toLowerCase()));
+    }
     /** A plugin on the user-trusted list, or a request not attributable to any */
     isTrustedPlugin(pluginId) {
         const p = (pluginId || '').toLowerCase();
@@ -133,6 +206,8 @@ class NetworkMonitor {
         const h = host.toLowerCase();
         if (BUILTIN_TRUSTED_HOSTS.has(h) || HOST_ALLOW_UNKNOWN)
             return true;
+        if (this._endpointTrusted.has(h))
+            return true;
         if (this._userTrusted.has(h))
             return true;
         // A user trust on an apex domain covers bare subdomains (api.example.com
@@ -143,14 +218,25 @@ class NetworkMonitor {
         }
         return false;
     }
-    _score(host, pluginId, method, reqBytes, tls, isNew) {
+    _score(host, pluginId, method, reqBytes, tls, isNew, absolute = true) {
         // Trusted host OR trusted plugin ⇨ no suspicion, no flags.
         if (this.isTrusted(host) || this.isTrustedPlugin(pluginId))
             return { risk: 0, flags: [] };
+        // A relative or unparsable URL names no host, so there is nothing to judge:
+        // it is recorded (never silently dropped) with one benign flag. Scoring it
+        // as an unknown host marked it 45 AND could not be undone from the panel —
+        // the whitelist route parses `http://<entry>`, and '?' is not a valid host.
+        if (!absolute)
+            return { risk: 0, flags: ['relative-url'] };
         let risk = 30; // unknown host
         const flags = ['unknown-host'];
+        // +5, not +15: an unseen host is the NORMAL case for every host on its
+        // first call after a restart (the seen-host map is memory-only), so a first
+        // contact must not by itself cross the 40-point warn threshold —
+        // 30 + 5 = 35 stays "normal". The flag is still recorded, and a first
+        // contact that also uploads or is plaintext still alerts (60 / 55).
         if (isNew) {
-            risk += 15;
+            risk += 5;
             flags.push('new-host');
         }
         if ((method === 'POST' || method === 'PUT' || method === 'PATCH') && reqBytes > 1024) {
@@ -172,23 +258,29 @@ class NetworkMonitor {
     record(input, preResolvedPluginId) {
         let host = '?';
         let pathname = '';
+        // Whether the target actually named a host. A relative/unparsable URL cannot
+        // be judged by host (see _score) and must stay out of the frequency counter,
+        // where every such call would pile onto the same '?' key.
+        let absolute = false;
         try {
             const u = new URL(input.url);
             host = u.host || '?';
             pathname = u.pathname || '';
+            absolute = !!u.host;
         }
         catch (_) {
             // Non-URL input; keep whatever we have.
         }
-        const firstSeen = !this._seenHosts.has(host);
-        this._seenHosts.set(host, (this._seenHosts.get(host) || 0) + 1);
+        const firstSeen = absolute ? !this._seenHosts.has(host) : false;
+        if (absolute)
+            this._seenHosts.set(host, (this._seenHosts.get(host) || 0) + 1);
         // Use the pre-resolved pluginId when available — the caller captures it
         // synchronously before `await fetch()` so the stack trace is intact.
         // After `await`, the caller's frames are gone and _pluginIdFromStack()
         // misattributes scoped packages (e.g. resolves `@michengai` instead of
         // `@michengai/dsh-archive-manager`).
         const pluginId = preResolvedPluginId || resolvePluginId();
-        const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen);
+        const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen, absolute);
         const entry = {
             seq: ++this._seq,
             pluginId,
@@ -231,6 +323,42 @@ class NetworkMonitor {
 let _networkMonitor = null;
 /** The wrapper we installed, saved so dispose can restore the original fetch. */
 let _restoreFetch = null;
+/** Endpoint hosts derived from DSH's own configuration; also read by the GET route. */
+let _configuredEndpoints = [];
+/**
+ * Recompute the endpoints DSH is configured to call and hand them to the
+ * auditor as trusted hosts.
+ *
+ * This is what keeps the audit useful without hardcoding vendors: any host the
+ * user pointed an LLM provider at (or exported as DEEPSEEK_BASE_URL) is, by
+ * construction, traffic DSH means to send — so it must not read as an "unknown
+ * host" and alert on every restart. It is deliberately NOT written into
+ * `netWhitelist`: that list is the user's own declaration and must stay
+ * distinguishable from what we inferred. Removing the provider drops the trust
+ * again on the next refresh.
+ */
+function refreshConfiguredEndpoints(source) {
+    const out = new Set();
+    try {
+        const descriptors = source && typeof source.describe === 'function' ? source.describe() : [];
+        for (const d of descriptors || []) {
+            // `user`/`base` are the layers; `value` is the resolved configuration.
+            _collectEndpointHosts(d && (d.value ?? d.user ?? d.base), 0, out);
+        }
+    }
+    catch (_) {
+        // Settings not ready (or a foreign shape): the env fallback below still counts.
+    }
+    for (const name of ENDPOINT_ENV_VARS) {
+        const h = _endpointHost(process.env[name]);
+        if (h)
+            out.add(h);
+    }
+    _configuredEndpoints = Array.from(out).sort();
+    if (_networkMonitor)
+        _networkMonitor.setEndpointTrusted(_configuredEndpoints);
+    return _configuredEndpoints;
+}
 /**
  * Estimate the byte size of a fetch RequestInit body WITHOUT reading its
  * content — sizing only, never capturing data.
@@ -352,6 +480,12 @@ export function apply(ctx, config) {
     // ── Settings namespace registration ──────────────────────────────────
     ctx.inject(['settings'], (settingsCtx) => {
         settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber));
+        // Trust the endpoints DSH itself is configured to call, so the user's own
+        // providers do not read as "unknown hosts" (see refreshConfiguredEndpoints).
+        refreshConfiguredEndpoints(settingsCtx.settings);
+        settingsCtx.effect(() => settingsCtx.on('settings/document-updated', () => {
+            refreshConfiguredEndpoints(settingsCtx.settings);
+        }));
     });
     // ── Network Monitor bootstrap ────────────────────────────────────────
     // One bounded monitor per process. Config is (re)read from volatile
@@ -372,6 +506,14 @@ export function apply(ctx, config) {
             _networkMonitor.setCap(config.netLogCap.get());
             _networkMonitor.setUserTrusted(Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get() : []);
             _networkMonitor.setPluginTrusted(Array.isArray(config.netPluginWhitelist.get()) ? config.netPluginWhitelist.get() : []);
+            // Derive the trusted endpoints again: settings may have become available
+            // (or changed) while auditing was off, in which case the inject callback
+            // had no live monitor to hand the list to.
+            try {
+                refreshConfiguredEndpoints(ctx.get ? ctx.get('settings') : null);
+            }
+            catch (_) { }
+            _networkMonitor.setEndpointTrusted(_configuredEndpoints);
             if (_restoreFetch === null && !globalThis.fetch?.__dockFlashTraced) {
                 installRequestTracer();
             }
@@ -472,9 +614,20 @@ export function apply(ctx, config) {
             kind: 'exact',
             path: '/plugins/dsh-flash-net-mon/network-whitelist',
             handler: async (req, res) => {
+                // GET is the read-only view: the user's own list plus what is trusted on
+                // their behalf (built-in hosts and the endpoints DSH is configured to
+                // call). Trust the user cannot see is trust they cannot audit.
+                if (req.method === 'GET') {
+                    sendJson(res, 200, {
+                        hosts: Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get() : [],
+                        builtin: Array.from(BUILTIN_TRUSTED_HOSTS).sort(),
+                        endpoints: _configuredEndpoints,
+                    });
+                    return;
+                }
                 if (req.method !== 'POST') {
                     res.statusCode = 405;
-                    res.setHeader('allow', 'POST');
+                    res.setHeader('allow', 'GET, POST');
                     res.end();
                     return;
                 }

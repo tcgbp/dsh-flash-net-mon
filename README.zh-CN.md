@@ -72,15 +72,17 @@
 
 三个子标签共用一份数据：面板每 `max(netPollMin, netPollBase)`（默认 60 秒）拉一次 `GET /network-log`（不带 `limit`，所以走服务端默认的 100 条、最新在前），随后所有筛选与分页都在浏览器里完成。
 
-- **请求流** —— 每页 10 条，底部有页码信息与「上一页 / 下一页」。列：方法、主机、路径、状态（2xx 绿 / 4xx 黄 / 5xx 红）、风险、耗时；时间、请求/响应大小、TLS、插件、标记在点开行后的「详情」浮层里。
+- **请求流** —— 每页 10 条，底部有页码信息与「上一页 / 下一页」。列：方法、主机、路径、状态（2xx 绿 / 4xx 黄 / 5xx 红）、风险、耗时；时间、请求/响应大小、TLS、插件、标记在点开行后于**行内展开**的「详情」里（同一个弹窗内，再点一次该行或按 Esc 收起，不会盖住其余内容）。
 - **告警** —— 同一批数据里风险分 ≥ `netSuspectWarn` 的行，按风险着色（≥ `netSuspectErr` 为危险色）。这个标签页**不是**另一条数据流。
-- **白名单** —— 在「主机」和「插件」两个视图间切换，用 ✕ 删条目；也可以用详情浮层里的「加主机白名单」「加插件白名单」一键加入。
+- **白名单** —— 在「主机」和「插件」两个视图间切换，用 ✕ 删条目。主机视图还有「常见服务（一键加入）」（只给精确主机名，见下）与**只读**的「自动信任」行；插件视图额外列出日志中出现过的插件（点「信任」即加入）与手动输入框。详情里也保留「加主机白名单」「加插件白名单」。
 
 工具栏：子标签切换、按插件筛选（选项来自当前已加载的条目）、按风险筛选（正常 / 可疑 / 危险）、**暂停 / 继续**（停掉轮询，但后端仍在记录，因此继续后会看到期间积累的条目）、**清空**（`DELETE /network-log`，清掉后端的环形缓冲与评分状态，而不只是清屏 —— 清空后「请求流」与「告警」都会变空）。自动滚动是内部行为：未暂停且开着自动滚动时，列表会跟到最新一页。
 
 **告警通知走的是另一条路**：`dsh-flash-net-mon:network-audit` 提供者轮询 `GET /network-alerts`（间隔 `max(netPollMin, netPollBase)`），把新增的高风险请求推给 dsh-flash 的告警注册表。它按 `seq` 去重，同一条不会重复弹出，还会跳过主机白名单 / 插件白名单里的命中项。
 
 白名单写入走两路：内存里立即生效，同时通过 `ctx.remote.settings` 持久化到 `dsh-flash-net-mon` 命名空间。客户端与上面两条 `network-*-whitelist` 路由用的是同一份设置，所以哪边先写都会被后写的覆盖；设置服务不可用时，内存里的覆盖仍然生效。
+
+「常见服务（一键加入）」是 15 个已知 API 主机（精确主机名，如 `api.openai.com`、`dashscope.aliyuncs.com`），点一下即加入用户白名单；已被覆盖的会置灰，并标出它是「已添加」「内置」还是「已配置端点」。这份建议里**不放内容托管域名**（`github.io`、`raw.githubusercontent.com`、`*.s3.amazonaws.com`、`*.cloudfront.net` 之类）——信任它们等于对所有经其分发的第三方内容放行。它只是按钮列表，不会替你自动写入。
 
 ## 风险评分算法
 
@@ -89,15 +91,21 @@
 | 因素 | 加分 |
 | --- | --- |
 | 未知主机：既不在内置可信列表 / 用户主机白名单里，也不是可信插件发起的（基线分） | +30 |
-| 首次访问该主机（`new-host`） | +15 |
+| 首次访问该主机（`new-host`） | +5 |
 | 大体积上传：`POST`/`PUT`/`PATCH` 且请求体 > 1 KB（`large-upload`） | +25 |
 | 明文传输：非 `https:`（`plaintext`） | +20 |
 | 高频访问：同一未知主机已出现 ≥ 3 次（`high-frequency`） | +15 |
 | 上限 | 100 |
 
-**可信就免检**：主机可信（内置可信列表 / 用户白名单）**或**插件可信时，风险分直接为 0，且不产生任何标记 —— 但请求**仍会记录**在请求流里。
+`new-host` 是 +5 而不是 +15：主机频次表只存在内存里，重启后每个主机都算「首次」，30 + 5 = 35 仍低于 `netSuspectWarn`（默认 40），所以一次普通的新连接不会再单独触发告警（标记照留）；如果这次连接同时是大体积上传或明文，仍会告警（60 / 55）。
+
+URL 解析不出主机时（相对地址，如 `/x`）不参与评分：记 0 分、打 `relative-url` 标记、照常写入日志，也**不**计入主机频次表（否则所有相对地址都会堆到同一个 `?` 键上，谁也白名单不掉）。
+
+**可信就免检**：主机可信（内置可信列表 / 用户白名单 / 自动信任的端点）**或**插件可信时，风险分直接为 0，且不产生任何标记 —— 但请求**仍会记录**在请求流里。
 
 内置可信主机：`www.google.com`（默认连通性测试目标）、`api.deepseek.com`、`chat.deepseek.com`。没有显式覆盖时 `HOST_ALLOW_UNKNOWN = false`，即**一切未列出的主机都从「可疑」起步**。
+
+除这份代码里的内置列表外，**DSH 自己配置的端点**也按可信处理：`settings.describe()` 里任何名字为 `baseURL`/`base_url`/`apiBase`/`api_base`/`endpoint` 的字段（LLM provider 的 `baseURL`，含 `dsh-llm-pi-ai` 那种按模型嵌套的写法），以及 `DEEPSEEK_BASE_URL` / `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` 环境变量。这一组信任**不会**写进用户白名单（用户声明与推断出的信任必须可区分），且只做**精确匹配**：配置了 `gw.example.com:8443` 不会顺带信任 `sub.gw.example.com`；`http://` 端点只在 loopback（`localhost` / `127.0.0.1` / `[::1]` / `*.localhost`）上被接受。设置一变就重算，移除 provider 后信任随之消失。白名单页的「自动信任（只读）」列出的就是当前实际生效的这批主机。
 
 用户白名单里的**顶级域名覆盖其子域**（加入 `example.com` 即信任 `api.example.com`），与别处 `NO_PROXY` 的语义一致。
 
@@ -110,6 +118,7 @@
 | `GET` | `/plugins/dsh-flash-net-mon/network-log` | 分页快照，最新在前；`?offset=` `&limit=`（1–500，默认 100），返回 `{ entries, offset, limit, total }` |
 | `DELETE` | `/plugins/dsh-flash-net-mon/network-log` | 清空监视器历史（环形缓冲 + 序号 + 主机频次） |
 | `GET` | `/plugins/dsh-flash-net-mon/network-alerts` | 风险 ≥ `netSuspectWarn` 的请求，返回 `{ alerts }`（最新在前） |
+| `GET` | `/plugins/dsh-flash-net-mon/network-whitelist` | 只读视图，返回 `{ hosts, builtin, endpoints }`：用户白名单、内置可信主机、从 DSH 配置推导出的端点 |
 | `POST` | `/plugins/dsh-flash-net-mon/network-whitelist` | 体 `{ "hosts": ["a.com", ...] }`，逐条校验为主机名（可带端口），写内存 + 持久化 |
 | `POST` | `/plugins/dsh-flash-net-mon/network-plugin-whitelist` | 体 `{ "plugins": ["pkg-name", ...] }`，同上，按插件 ID |
 
