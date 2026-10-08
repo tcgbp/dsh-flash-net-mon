@@ -213,6 +213,44 @@ rm -f release.json
   `github.com` is intermittently unreachable here while `api.github.com` is not, so a
   connection reset says nothing about whether the asset is good.
 
+### Publishing to npm
+
+npm is **optional** — listing on dsh-market does not depend on it (see the end of this file).
+When publishing, expect the registry to answer in two stages, and **treat neither one as a
+failure**:
+
+- A successful `npm publish` answers **HTTP 202**, not 201, with *"Your package is being
+  processed and may take a few minutes to become available."* The version is staged while the
+  registry finishes processing: `dist-tags` still points at the previous version and
+  `GET /<name>/<version>` answers `404` for a few minutes.
+- Publishing again inside that window answers **`409 Conflict`** — *"Cannot publish over
+  previously staged version \"<version>\""*. That error means the first publish **worked**. It
+  is not a broken release and must not be answered with `--force` or a new version number.
+
+Read the real state instead of reacting to either status, with the same token the publish used:
+
+```sh
+tok=$(sed -n 's/.*_authToken=//p' ~/.npmrc)
+curl -sS -o /dev/null -w '%{http_code}\n' https://registry.npmjs.org/dsh-flash-net-mon/<version>
+curl -sS https://registry.npmjs.org/dsh-flash-net-mon | grep -o '"latest":"[^"]*"'
+```
+
+`npm stage list` shows nothing for such a publish: the implicit stage is **not** the
+`npm stage publish` feature, it has no id to approve or reject, and there is nothing to clean
+up. Measured on 2026-10-08 with `0.2.0`: publish → `202` (`shasum d3eb57bc…`), immediate
+re-publish → `409`, `GET /-/stage` → `{"items":[],"page":0,"perPage":10,"total":0}`, version
+endpoint `404` → `200` about a minute later, `dist-tags` → `latest: 0.2.0`
+(`integrity sha512-cGuyrhgR…`). The published tarball's seven files were then compared
+byte-for-byte against the working tree — identical. **Its own sha256 does not match
+`pnpm pack`'s** (npm repacks the files itself), so `dist.shasum`/`dist.integrity` describe
+npm's tarball while the GitHub Release asset is `pnpm`'s: compare *contents* across the two
+channels, never the tarball hash.
+
+A consumer installing the fresh version through a profile's pnpm workspace can also hit the
+supply-chain age policy (`minimumReleaseAge`). The plugin manager records the exception itself
+in that profile's `pnpm-workspace.yaml` (`minimumReleaseAgeExclude: [dsh-flash-net-mon@<version>]`)
+and installs anyway — a profile-side note, not something this repository ships.
+
 ---
 
 ## Listing on dsh-market
@@ -254,7 +292,7 @@ YAML parses it as a nested mapping key.
 | `github.com/tcgbp/dsh-flash-net-mon` exists — public, default branch `master` | ✅ created 2026-10-04T02:27Z |
 | The mirror has run: GitHub's tree equals Gitee's | ✅ verified by tree hash |
 | Repository carries the `dsh-plugin` topic | ✅ |
-| A Release serves `dsh-flash-net-mon.tgz` | ✅ `v0.1.0`, published 2026-10-04T03:23Z — fetched back and byte-identical |
+| A Release serves `dsh-flash-net-mon.tgz` | ✅ `v0.2.0`, published 2026-10-08 — the version-free `releases/latest/download/` URL serves it; fetched back and byte-identical |
 | Repository is at least 1 day old | ⏳ true from 2026-10-05; the gate re-runs itself every 6 hours |
 | `dsh.bundle` manifest + `cordis.patch.yml` | ✅ both present |
 | Real working code; `@deepseek-ai/*` as peer dependencies | ✅ |
@@ -268,4 +306,7 @@ own.
 install skips the build-approval step). The registry maps the npm package back to the listed
 repository by matching the published package's own `repository` field against it, so such a
 package's `repository` must point at `github.com/tcgbp/dsh-flash-net-mon` — a Gitee-only URL
-does not match, and the mapping is then simply left absent. Listing does not depend on npm.
+does not match, and the mapping is then simply left absent. Listing does not depend on npm. The
+two-stage publish behaviour (`202`, then `409` on a retry) is recorded under
+[Publishing to npm](#publishing-to-npm) so a normal propagation pause is never mistaken for a
+broken release.
