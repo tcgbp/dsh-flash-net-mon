@@ -297,6 +297,7 @@ Behaviour worth knowing:
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | the plugin framework |
 | `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | supplies the `quickControl` and `dockFlashAlerts` services |
+| `@deepseek-ai/dsh-client-locale` | client inject | the official `locale` service this plugin registers its zh/en dictionaries with (declared for load order; absence degrades to the browser-language fallback) |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer, optional | workbench mode only |
 | `@deepseek-ai/schemastery` | dependency | the settings schema (`volatile()`) |
 
@@ -391,4 +392,11 @@ tarball the dsh-market entry points at.
   mount (nested context or a remount) therefore owns its own state and disposing one
   instance can never tear out another's tracer or wipe its monitor.
 - **UI language**: the panel and the alert text carry both Chinese and English, and
-  follow DSH's language setting.
+  follow DSH's language setting. The zh/en tables are registered with DSH's official
+  client `locale` service (`@deepseek-ai/dsh-client-locale`) under the
+  `dsh-flash-net-mon` namespace and read through it, so this plugin follows the global
+  language by contract — it does not read or watch `<html lang>` itself, and a switch
+  repaints every surface it owns (Quick Control row, alert text, the open config modal
+  and its audit panel) instead of leaving some components in the old language. If that
+  service is absent, the plugin falls back to the browser's own language; the language
+  itself is only ever written by dsh-flash's own setting row.

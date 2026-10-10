@@ -165,6 +165,7 @@ withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | 插件框架 |
 | `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | 提供 `quickControl` 与 `dockFlashAlerts` 服务 |
+| `@deepseek-ai/dsh-client-locale` | client inject | 官方 `locale` 服务，本插件的中英文表就注册在它上面（只用于声明加载顺序；缺失时退化为按浏览器语言显示） |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer，可选 | 仅工作台模式需要 |
 | `@deepseek-ai/schemastery` | 直接依赖 | 设置 schema（`volatile()`） |
 
@@ -217,4 +218,4 @@ Gitee 是权威仓库，也是本地唯一配置的 remote；GitHub（`github.co
 - **历史只在内存里**：环形缓冲上限 `netLogCap`，超出丢弃最旧的一条。第二条淘汰轴——`netLogTtlSec`（默认 60 分钟，0 = 关闭）——会剔除早于该窗口的条目，即使缓冲未满，这样长时间运行的会话不会一直囤着陈旧日志；`record`/`snapshot`/`alerts` 下次调用时惰性裁剪前端。始终是会话数据，进程重启即丢失。唯一的例外是**主机频次表**（host → 次数 + 最近一次时间）会持久化，让 `new-host` 跨重启保持精确（见上「主机频次持久化」）。任何请求日志条目都绝不落盘。
 - **全局影响**：追踪器包装的是 `globalThis.fetch`（Node 18+ 的 undici fetch，`ctx.http` 与裸 `fetch()` 共用同一入口）**以及** Node 原生 `http.request` / `https.request`（插件不走 fetch、直接谈 HTTP 时走的路径）。WebSocket 以一次 HTTP Upgrade 启程，所以 `ws`-style 连接也会被记成一条 Upgrade 请求。关闭开关会一并还原两者；`__dockFlashTraced` 标记防止热重载/重复 `apply()` 造成的双重包装。两条包装都**不读不写**请求/响应体，只记元数据。
 - **实例级状态**：审计器的监视器、追踪器还原钩子与可信端点列表都收在**每个 `apply()` 自己的对象**里，不再放在模块作用域。这样第二次挂载（嵌套上下文或 remount）各握各的状态，销毁任一实例都不会把另一个的追踪器拆掉或清掉它的监视器。
-- **界面语言**：面板与告警文案自带中英文，跟随 DSH 的语言设置。
+- **界面语言**：面板与告警文案自带中英文，跟随 DSH 的语言设置。中英文表以 `dsh-flash-net-mon` 命名空间注册到 DSH 官方的浏览器端 `locale` 服务（`@deepseek-ai/dsh-client-locale`）并统一经它读取，所以本插件是**按契约**跟随全局语言：自己不再读、也不再监听 `<html lang>`；且语言切换会重绘它自己拥有的全部界面（Quick Control 行、告警文案、已打开的配置弹窗及其审计面板），不会像以前那样把部分组件留在旧语言上。若该服务不存在，插件退化为按浏览器自身语言显示；语言本身只由 dsh-flash 的语言设置行写入。
