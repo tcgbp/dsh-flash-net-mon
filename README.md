@@ -354,8 +354,12 @@ tarball the dsh-market entry points at.
   persisted so `new-host` stays precise across restarts (see "Seen-host frequency
   persistence" below). No request log entry is ever written to disk.
 - **Global reach**: the tracer wraps `globalThis.fetch` (Node 18+ undici; `ctx.http` and
-  a bare `fetch()` share that entry point, so one wrapper covers both). Turning the
-  switch off restores it, and the `__dockFlashTraced` mark prevents a double wrapper
-  after a hot reload or a repeated `apply()`.
+  a bare `fetch()` share that entry point) **and** Node's native `http.request` /
+  `https.request` (the path a plugin uses when it talks HTTP directly instead of through
+  fetch). A WebSocket is opened with a first HTTP Upgrade request, so `ws`-style
+  connections are captured as an Upgrade entry too. Turning the switch off restores all
+  three entries and the `__dockFlashTraced` mark prevents a double wrapper after a hot
+  reload or a repeated `apply()`. Neither wrapper reads or mutates request/response
+  bodies — only metadata.
 - **UI language**: the panel and the alert text carry both Chinese and English, and
   follow DSH's language setting.

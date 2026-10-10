@@ -12,7 +12,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer } from '../dist/index.js'
+import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
   return mon.record(
@@ -317,4 +318,39 @@ test('#6: alerts() also applies the TTL window', async () => {
   const al = m.alerts(55)
   assert.equal(al.length, 1)
   assert.equal(al[0].seq, fresh.seq)
+})
+
+// ── #3 native http/https tracer ──────────────────────────────────────────
+test('#3: installHttpTracer wraps then restores node:http.request', () => {
+  const orig = nodeHttp.request
+  const disposer = installHttpTracer()
+  assert.notEqual(nodeHttp.request, orig, 'request should be patched while installed')
+  assert.equal(typeof disposer, 'function')
+  disposer()
+  assert.equal(nodeHttp.request, orig, 'request should be restored after dispose')
+})
+
+test('#3: a real native http request still completes under the tracer', async () => {
+  const server = nodeHttp.createServer((_req, res) => {
+    res.setHeader('content-length', '5')
+    res.end('hello')
+  })
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  const port = (server.address() as any).port
+  const disposer = installHttpTracer()
+  try {
+    const body = await new Promise<string>((resolve, reject) => {
+      const req = nodeHttp.request({ host: '127.0.0.1', port, path: '/x', method: 'GET' }, (res) => {
+        let data = ''
+        res.on('data', (c) => (data += c))
+        res.on('end', () => resolve(data))
+      })
+      req.on('error', reject)
+      req.end()
+    })
+    assert.equal(body, 'hello')
+  } finally {
+    disposer()
+    await new Promise<void>((r) => server.close(() => r()))
+  }
 })

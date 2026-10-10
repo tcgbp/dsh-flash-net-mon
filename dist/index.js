@@ -1,3 +1,5 @@
+import nodeHttp from 'node:http';
+import nodeHttps from 'node:https';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -532,6 +534,8 @@ export class NetworkMonitor {
 let _networkMonitor = null;
 /** The wrapper we installed, saved so dispose can restore the original fetch. */
 let _restoreFetch = null;
+/** Original http/https `.request` refs, restored on dispose. */
+let _restoreHttp = null;
 /** Endpoint hosts derived from DSH's own configuration; also read by the GET route. */
 let _configuredEndpoints = [];
 /**
@@ -723,6 +727,101 @@ function installRequestTracer() {
     };
     return _restoreFetch;
 }
+/**
+ * Install a tracer on Node's native `http.request` / `https.request`.
+ *
+ * undici fetch (and therefore `ctx.http` / raw `fetch`) is already captured by
+ * installRequestTracer. This second wrapper closes the gap for plugins that talk
+ * to hosts directly through `node:http`/`node:https` — and, because a WebSocket
+ * is opened with a first HTTP Upgrade request, for `ws`-style connections too,
+ * which is the heart of the #3 "security / non-fetch" ask.
+ *
+ * We only tap metadata listeners on the returned ClientRequest; neither the
+ * request nor the response stream is read or mutated, so bodies stay untouched
+ * (privacy + non-intrusion). Host/path/method are read off the ClientRequest's
+ * public surface (robust against every overload form of request()).
+ *
+ * Returns a disposer that restores both originals.
+ */
+export function installHttpTracer() {
+    // Keep the originals so dispose can restore exactly what we replaced.
+    const mods = [nodeHttp, nodeHttps];
+    const origs = [nodeHttp.request, nodeHttps.request];
+    if (nodeHttp.request.__dockFlashTraced)
+        return () => { };
+    for (const mod of mods) {
+        const orig = mod.request;
+        mod.request = function (...args) {
+            let callerPluginId = '';
+            try {
+                callerPluginId = resolvePluginId();
+            }
+            catch (_) { }
+            const started = Date.now();
+            const isHttps = mod === nodeHttps;
+            let req;
+            try {
+                req = orig.apply(this, args);
+            }
+            catch (e) {
+                // request() returns synchronously; only invalid args throw.
+                throw e;
+            }
+            const proto = isHttps ? 'https:' : 'http:';
+            const host = (req && req.host) || '?';
+            const path = (req && (req.path || req.pathname)) || '/';
+            const url = proto + '//' + host + path;
+            const method = (req && req.method) || 'GET';
+            let reqBytes = 0;
+            try {
+                if (req && typeof req.getHeaders === 'function') {
+                    const h = req.getHeaders();
+                    reqBytes = _contentLengthOf(h) || 0;
+                }
+            }
+            catch (_) { }
+            try {
+                req.on('response', (res) => {
+                    const status = res && res.statusCode != null ? res.statusCode : 0;
+                    let resBytes = -1;
+                    try {
+                        if (res && res.headers) {
+                            const cl = res.headers['content-length'];
+                            resBytes = cl != null ? (parseInt(String(cl), 10) || -1) : -1;
+                        }
+                    }
+                    catch (_) { }
+                    if (_networkMonitor) {
+                        try {
+                            _networkMonitor.record({ method, url, reqBytes, resBytes, status, durationMs: Date.now() - started, tls: isHttps }, callerPluginId);
+                        }
+                        catch (_) { }
+                    }
+                });
+                req.on('error', () => {
+                    if (_networkMonitor) {
+                        try {
+                            _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: Date.now() - started, tls: isHttps }, callerPluginId);
+                        }
+                        catch (_) { }
+                    }
+                });
+            }
+            catch (_) { }
+            return req;
+        };
+        mod.request.__dockFlashTraced = true;
+    }
+    _restoreHttp = () => {
+        for (let i = 0; i < mods.length; i++) {
+            if (mods[i].request && mods[i].request.__dockFlashTraced) {
+                mods[i].request = origs[i];
+            }
+        }
+        _restoreHttp = null;
+    };
+    return _restoreHttp;
+}
 /** Send a JSON response with no-store cache control. */
 function sendJson(res, status, payload) {
     res.statusCode = status;
@@ -813,13 +912,19 @@ export function apply(ctx, config) {
             if (_restoreFetch === null && !globalThis.fetch?.__dockFlashTraced) {
                 installRequestTracer();
             }
+            if (_restoreHttp === null) {
+                installHttpTracer();
+            }
         }
-        else if (_restoreFetch !== null) {
+        else if (_restoreFetch !== null || _restoreHttp !== null) {
             // Disabled: stop wrapping fetch (restores the original) and release the
             // monitor so no further recording happens. The routes read the nulled
             // monitor as empty. Flush the seen-host store first so the reset (or the
             // latest frequencies) lands on disk.
-            _restoreFetch();
+            if (_restoreFetch)
+                _restoreFetch();
+            if (_restoreHttp)
+                _restoreHttp();
             if (_networkMonitor)
                 _networkMonitor.flush();
             _networkMonitor = null;
@@ -828,10 +933,13 @@ export function apply(ctx, config) {
     reconfigureAudit();
     ctx.effect(() => {
         // Return the cleanup function — Cordis calls it when the context is disposed.
-        const restore = _restoreFetch;
+        // Read the current restorers at teardown time (they null themselves), so a
+        // toggle before dispose is also correctly undone — fetch and http both.
         return () => {
-            if (restore)
-                restore();
+            if (_restoreFetch)
+                _restoreFetch();
+            if (_restoreHttp)
+                _restoreHttp();
             if (_networkMonitor)
                 _networkMonitor.flush();
             _networkMonitor = null;
