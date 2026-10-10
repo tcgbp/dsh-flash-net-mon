@@ -1,5 +1,19 @@
+# Settings pnpm reads from THIS file, not from `.npmrc`. pnpm 12 stops honouring
+# the legacy `.npmrc` keys once a workspace file exists, so a setting that looks
+# configured there is silently ignored — measured here, `pnpm config get
+# autoInstallPeers` answers `undefined` while `.npmrc` says `false`.
+
+# Keep peers out of the install. `dsh-flash` is an OPTIONAL peer (see
+# peerDependenciesMeta): this plugin's fetcher tracer must not pull a panel
+# dependency it never imports. With auto-install on, `pnpm install` — which pnpm 12
+# runs before EVERY command, including `pnpm typecheck` — rewrites pnpm-lock.yaml
+# to `autoInstallPeers: true` and installs dsh-flash as a resolved peer, quietly
+# reversing the decision recorded in CHANGELOG 0.1.0.
+autoInstallPeers: false
+strictPeerDependencies: false
+
 # pnpm 12 refuses any package younger than 24 hours by default. The core was
 # published on 2026-10-08; without this exemption a fresh clone cannot install.
-# Remove this file once the window has passed.
+# Drop this exemption once the window has passed — the settings above stay.
 minimumReleaseAgeExclude:
   - dsh-flash@1.0.0
