@@ -756,6 +756,14 @@ export function apply(ctx: Context, config: NetMonConfig) {
     // Trust the endpoints DSH itself is configured to call, so the user's own
     // providers do not read as "unknown hosts" (see refreshConfiguredEndpoints).
     refreshConfiguredEndpoints(settingsCtx.settings)
+    // Re-evaluate the audit toggle here too: at apply() time the resolved
+    // config may not yet reflect the PERSISTED netAuditEnabled (the settings
+    // service injects asynchronously). reconfigureAudit() reads the volatile
+    // reference, so once settings are live it must run again to start the fetch
+    // tracer if the user had auditing on (single authority = host-settings).
+    // reconfigureAudit is a hoisted closure defined later in apply(); this
+    // callback fires after apply() has fully initialised it.
+    try { reconfigureAudit() } catch (_) {}
     settingsCtx.effect(() => settingsCtx.on('settings/document-updated' as any, () => {
       refreshConfiguredEndpoints(settingsCtx.settings)
     }))

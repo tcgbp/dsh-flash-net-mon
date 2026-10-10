@@ -19,8 +19,10 @@ Two capabilities, one in each half of the plugin:
    normal / suspect / dangerous by risk score, and offers filtering, whitelists and
    an explanation of the scoring.
 
-Auditing is **off by default** (`netAuditEnabled: false`, and the field is
-`volatile()`, so every DSH restart returns it to that default).
+Auditing is **off by default** (`netAuditEnabled: false`). The setting is
+`volatile()` only in the Cordis sense (live-editable without remounting); once you
+turn the switch on, the value is persisted through DSH's settings namespace and
+survives restarts, exactly like the host whitelist.
 
 ## What it registers
 
@@ -71,11 +73,13 @@ Monitor**:
 - turning it off **restores the original `fetch`** and releases the monitor, so all
   recording stops.
 
-**Who wins.** `netAuditEnabled` is `volatile()`: DSH resets it to `false` on every
-restart. Your actual choice lives in the browser, at
-`localStorage['dsh-flash-net-mon:monitor-network']`. When the two disagree on load,
-**localStorage is authoritative and is written back to the host** — which is why the
-switch is still where you left it after a restart.
+**Single authority.** The host-side `netAuditEnabled` setting is the one source of
+truth for whether the monitor is on. It is written through DSH's settings namespace
+(the same durable mechanism that persists the host whitelist), so it survives restart
+— `volatile()` here only means the field is editable at runtime without remounting, not
+that DSH forgets it. The switch reads that persisted value and writes back through the
+settings bridge; there is no separate localStorage copy to reconcile, so the toggle is
+exactly where you left it after a restart and can never silently fork from the host.
 
 ### The config modal
 

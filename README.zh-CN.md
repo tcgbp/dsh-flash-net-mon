@@ -13,7 +13,7 @@
 1. **网络监控（连通性心跳）** —— 定时探测 `/plugins/dock-flash/health`，把「慢」和「超时」变成 dsh-flash 的告警。
 2. **出站审计（fetch 追踪）** —— 可选地包装全局 `fetch`，记录**元数据级**的出站请求清单，按风险分给出「正常 / 可疑 / 危险」分级，并提供筛选、白名单与风险评分说明。
 
-审计是**默认关闭**的（`netAuditEnabled: false`，且该字段是 `volatile()`，每次 DSH 重启都会回到默认值）。
+审计是**默认关闭**的（`netAuditEnabled: false`）。该字段只在 Cordis 意义上 `volatile()`（可运行时免重挂载地编辑）；一旦你把开关打开，这个值就会通过 DSH 的 settings 命名空间持久化并跨重启存活，与主机白名单完全一致。
 
 ## 它注册了什么
 
@@ -51,7 +51,7 @@
 - 打开开关会写 `netAuditEnabled = true` 到宿主，宿主随即安装 fetch 追踪器；
 - 关闭开关会**还原原始 `fetch`** 并释放监视器，所有记录停止。
 
-**谁说了算**：`netAuditEnabled` 是 `volatile()`，DSH 每次重启都重置为 `false`；你真正的选择存在浏览器 `localStorage['dsh-flash-net-mon:monitor-network']`。加载时若两者不一致，**以 localStorage 为准并回写宿主** —— 这就是「重启后开关还是我上次开的样子」的原因。
+**单权威**：宿主机上的 `netAuditEnabled` 设置是「开关是否开启」的唯一事实来源。它经由 DSH 的 settings 命名空间写入（与持久化主机白名单完全相同的机制），因此能跨重启存活——这里的 `volatile()` 只表示该字段可在运行时免重挂载地编辑，**不是**「DSH 会忘掉它」。开关直接读取这个已持久化的值、并通过 settings 桥写回；不存在另一份 localStorage 副本需要对齐，所以重启后开关就是你上次留的样子，也永远不会与宿主「静默分叉」。
 
 ### 配置弹窗
 
