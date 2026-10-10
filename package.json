@@ -29,7 +29,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:only": "node --test \"test/**/*.test.ts\"",
+    "test": "pnpm build && node --test \"test/**/*.test.ts\"",
+    "test:watch": "node --test --watch \"test/**/*.test.ts\""
   },
   "dependencies": { "@deepseek-ai/schemastery": "^3.18.4" },
   "peerDependencies": {

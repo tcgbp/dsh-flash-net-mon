@@ -76,12 +76,15 @@ const _requestContext = new AsyncLocalStorage<{ pluginId: string }>()
 const _UNKNOWN_PLUGIN = 'unknown'
 
 /** A single audited request's metadata record. No body/header values, ever. */
-interface NetworkEntry {
+export interface NetworkEntry {
   seq: number
   pluginId: string
   method: string
   host: string
   pathname: string
+  /** Host the response redirected to (from `res.url`), only set when it
+   *  differs from `host`. Lets an auditor see where data actually went. */
+  finalHost: string
   reqBytes: number
   /** -1 when the response never arrived (aborted / DNS / refused). */
   resBytes: number
@@ -220,7 +223,7 @@ function _collectEndpointHosts(node: unknown, depth: number, out: Set<string>): 
  * on overflow) plus a suspicion scorer. Lost on restart — intentional: network
  * audit history is session-scoped, not durable user data.
  */
-class NetworkMonitor {
+export class NetworkMonitor {
   private _entries: NetworkEntry[] = []
   private _seq = 0
   /** Resolved once; the mutable set of user-trusted hosts. */
@@ -276,14 +279,23 @@ class NetworkMonitor {
     return false
   }
 
-  private _score(host: string, pluginId: string, method: string, reqBytes: number, tls: boolean, isNew: boolean, absolute = true): { risk: number; flags: string[] } {
-    // Trusted host OR trusted plugin ⇨ no suspicion, no flags.
-    if (this.isTrusted(host) || this.isTrustedPlugin(pluginId)) return { risk: 0, flags: [] }
-    // A relative or unparsable URL names no host, so there is nothing to judge:
-    // it is recorded (never silently dropped) with one benign flag. Scoring it
-    // as an unknown host marked it 45 AND could not be undone from the panel —
-    // the whitelist route parses `http://<entry>`, and '?' is not a valid host.
+  private _score(host: string, pluginId: string, method: string, reqBytes: number, tls: boolean, isNew: boolean, absolute = true, redirectedToUntrusted = false): { risk: number; flags: string[] } {
+    // Trusted host OR trusted plugin ⇨ no suspicion, no flags — unless the
+    // response redirected to a DIFFERENT, untrusted host. That is exactly the
+    // case #1 targets: you trusted `A`, but the data actually went to `B`.
+    if ((this.isTrusted(host) || this.isTrustedPlugin(pluginId)) && !redirectedToUntrusted) {
+      return { risk: 0, flags: [] }
+    }
+    // A relative or unparsable request is recorded with one benign flag (see
+    // below). There is no resolved host to judge and such a request cannot
+    // redirect to an outside host, so it never carries `redirected-host`.
     if (!absolute) return { risk: 0, flags: ['relative-url'] }
+    if (redirectedToUntrusted) {
+      // The strongest signal: a request reached a host we do NOT trust, having
+      // claimed a different target up front. Score 60 regardless of whether the
+      // origin itself was trusted — trusted-but-redirected is just as bad.
+      return { risk: 60, flags: ['redirected-host'] }
+    }
     let risk = 30                 // unknown host
     const flags: string[] = ['unknown-host']
     // +5, not +15: an unseen host is the NORMAL case for every host on its
@@ -302,9 +314,15 @@ class NetworkMonitor {
     return { risk: Math.min(100, risk), flags }
   }
 
-  record(input: { method: string; url: string; reqBytes: number; resBytes: number; status: number; durationMs: number; tls: boolean }, preResolvedPluginId?: string): NetworkEntry {
+  record(input: { method: string; url: string; finalUrl?: string; reqBytes: number; resBytes: number; status: number; durationMs: number; tls: boolean }, preResolvedPluginId?: string): NetworkEntry {
     let host = '?'
     let pathname = ''
+    // The host the response *actually* arrived from (undici exposes the final
+    // URL after following redirects); empty when none / same as `host`.
+    let finalHost = ''
+    // Whether the request ended up on an untrusted final host different from
+    // the initial target — the #1 redirect-based exfiltration signal.
+    let redirectedToUntrusted = false
     // Whether the target actually named a host. A relative/unparsable URL cannot
     // be judged by host (see _score) and must stay out of the frequency counter,
     // where every such call would pile onto the same '?' key.
@@ -317,6 +335,15 @@ class NetworkMonitor {
     } catch (_) {
       // Non-URL input; keep whatever we have.
     }
+    if (input.finalUrl) {
+      try {
+        const fu = new URL(input.finalUrl)
+        finalHost = fu.host || ''
+        redirectedToUntrusted = !!absolute && !!finalHost && finalHost.toLowerCase() !== host.toLowerCase() && !this.isTrusted(finalHost)
+      } catch (_) {
+        // Unparsable final URL; leave finalHost empty.
+      }
+    }
     const firstSeen = absolute ? !this._seenHosts.has(host) : false
     if (absolute) this._seenHosts.set(host, (this._seenHosts.get(host) || 0) + 1)
     // Use the pre-resolved pluginId when available — the caller captures it
@@ -325,13 +352,14 @@ class NetworkMonitor {
     // misattributes scoped packages (e.g. resolves `@michengai` instead of
     // `@michengai/dsh-archive-manager`).
     const pluginId = preResolvedPluginId || resolvePluginId()
-    const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen, absolute)
+    const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen, absolute, redirectedToUntrusted)
     const entry: NetworkEntry = {
       seq: ++this._seq,
       pluginId,
       method: input.method,
       host,
       pathname,
+      finalHost,
       reqBytes: input.reqBytes,
       resBytes: input.resBytes,
       status: input.status,
@@ -454,10 +482,14 @@ function installRequestTracer(): () => void {
       status = res.status
       const cl = res.headers && res.headers.get && res.headers.get('content-length')
       resBytes = cl ? (parseInt(cl, 10) || 0) : -1
+      // undici's Response exposes `.redirected` (boolean) and `.url` (the final
+      // URL after following any redirects). Pass those through so record() can
+      // see where the request *actually* landed, not just where it was aimed.
+      const finalUrl = res && typeof res.url === 'string' && res.url ? res.url : undefined
       const end = Date.now()
       if (_networkMonitor) {
         try {
-          _networkMonitor.record({ method, url, reqBytes, resBytes, status, durationMs: end - started, tls }, callerPluginId)
+          _networkMonitor.record({ method, url, finalUrl, reqBytes, resBytes, status, durationMs: end - started, tls }, callerPluginId)
         } catch (_) {}
       }
       return res
@@ -465,6 +497,8 @@ function installRequestTracer(): () => void {
       const end = Date.now()
       if (_networkMonitor) {
         try {
+          // On an aborted/rejected request (DNS / refused / timeout) there is no
+          // final URL to record — the response never arrived.
           _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: end - started, tls }, callerPluginId)
         } catch (_) {}
       }

@@ -152,7 +152,17 @@ Every outbound request scores 0–100:
 | Large upload: `POST`/`PUT`/`PATCH` with a body over 1 KB (`large-upload`) | +25 |
 | Plaintext: not `https:` (`plaintext`) | +20 |
 | High frequency: the same unknown host seen ≥ 3 times (`high-frequency`) | +15 |
+| Redirected to a different, untrusted host (`redirected-host`) | 60 flat |
 | Ceiling | 100 |
+
+`redirected-host` is a **flat 60**, not an additive +. It fires when the initial
+target and the response's final host differ AND the final host is not trusted —
+even when the original host was trusted. You declared `A` trusted, but the data
+actually went to `B`; that is exactly the redirect-based exfiltration case the
+audit exists to catch. A benign redirect (same host, or a final host that is also
+trusted) raises nothing. Note the final host comes from the SDK's `res.url` after
+following redirects, so a bare `302` followed by a non-HTTP client API won't be
+caught — only what Node's fetch follows.
 
 `new-host` is +5 rather than +15: the seen-host counter is memory-only, so after a
 restart every host counts as "first time"; 30 + 5 = 35 stays below `netSuspectWarn`
@@ -167,7 +177,9 @@ whitelist entry could ever match it.
 
 **Trusted means exempt.** If the host is trusted (built-in list, user whitelist, or an
 auto-trusted endpoint) **or** the plugin is trusted, the risk is 0 and no flags are
-raised — but the request **is still recorded** in the request list.
+raised — the request **is still recorded** in the request list. The one exception is a
+redirect to a different, untrusted host, which still scores 60 (`redirected-host`)
+regardless of how trusted the origin was.
 
 Built-in trusted hosts: `www.google.com` (the default connectivity test target),
 `api.deepseek.com`, `chat.deepseek.com`. Without an explicit override
@@ -265,6 +277,7 @@ The browser half needs no row: the module loader discovers it from `package.json
 pnpm install
 pnpm run build       # tsc → dist/index.js   (host half only)
 pnpm run typecheck
+pnpm test            # build + unit tests (node:test, no framework dep)
 ```
 
 `dist/index.js` is **tracked on purpose**, for the same reason dock-flash tracks its
@@ -272,6 +285,10 @@ own: a git install fetches sources and runs no build script, so a repository wit
 `dist/` would arrive missing the host entry point that `main` and `exports["."]` point
 at. `lib/client.js` is a single file edited directly; it has no build step and takes
 effect on page refresh.
+
+The unit tests in `test/` import the **compiled** `dist/index.js` (not the `.ts`
+source) because Node's strip-only TS mode cannot parse the parameter property in
+`src/index.ts`. Run `pnpm build` before editing/rerunning: `pnpm test` builds first.
 
 ## Layout
 
@@ -292,7 +309,8 @@ tarball the dsh-market entry points at.
 ## Privacy and limits (deliberate)
 
 - **Metadata only**: method, host, path, byte counts, status, duration, TLS or not,
-  risk score, flags, timestamp. **Request and response bodies are never read, and
+  risk score, flags, timestamp, and the final host after a redirect (when it differs
+  from the initial target). **Request and response bodies are never read, and
   header values are never recorded.** The response object is handed back to the caller
   untouched.
 - **No stream consumption**: an opaque request body counts as 0 bytes (better to report
