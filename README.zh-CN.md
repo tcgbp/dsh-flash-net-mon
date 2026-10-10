@@ -142,7 +142,7 @@ withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都
 | `DELETE` | `/plugins/dsh-flash-net-mon/network-log` | 清空监视器历史（环形缓冲 + 序号 + 主机频次） |
 | `GET` | `/plugins/dsh-flash-net-mon/network-alerts` | 风险 ≥ `netSuspectWarn` 的请求，返回 `{ alerts }`（最新在前） |
 | `GET` | `/plugins/dsh-flash-net-mon/network-whitelist` | 只读视图，返回 `{ hosts, builtin, endpoints }`：用户白名单、内置可信主机、从 DSH 配置推导出的端点 |
-| `POST` | `/plugins/dsh-flash-net-mon/network-whitelist` | 体 `{ "hosts": ["a.com", ...] }`，逐条校验为主机名（可带端口），写内存 + 持久化 |
+| `POST` | `/plugins/dsh-flash-net-mon/network-whitelist` | 体 `{ "hosts": ["a.com", ...] }`，严格规范化为裸 `host[:port]`：去 `http(s)://` 前缀、小写化、端口须为 `0–65535` 整数，带路径/查询/片段/`user@` 一律 `400` 拒绝；写内存 + 持久化 |
 | `POST` | `/plugins/dsh-flash-net-mon/network-plugin-whitelist` | 体 `{ "plugins": ["pkg-name", ...] }`，同上，按插件 ID |
 
 行为要点：

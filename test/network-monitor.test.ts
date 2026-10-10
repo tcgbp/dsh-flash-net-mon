@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -377,4 +377,64 @@ test('#7: nested context wins over an outer one (innermost plugin is caller)', (
     withPluginContext('inner', () => resolvePluginId())
     return resolvePluginId()
   }), 'outer')
+})
+
+// ── #9 strict host-whitelist canonicalisation ────────────────────────────
+const HOST_OK: Array<[string, string]> = [
+  ['example.com', 'example.com'],
+  ['API.example.COM', 'api.example.com'],          // case → lowercase
+  ['sub.example.com', 'sub.example.com'],
+  ['https://example.com', 'example.com'],          // scheme prefix stripped
+  ['http://example.com', 'example.com'],
+  ['example.com:8080', 'example.com:8080'],        // port preserved
+  ['example.com:443', 'example.com:443'],
+  ['127.0.0.1', '127.0.0.1'],
+  ['localhost', 'localhost'],
+  ['[::1]', '[::1]'],
+  ['a-b.c-d.example.com', 'a-b.c-d.example.com'],
+]
+
+const HOST_BAD: string[] = [
+  '',
+  '   ',
+  'example.com/path',         // path
+  'https://example.com/foo',  // path + scheme
+  'https://example.com?x=1',  // query
+  'https://example.com#frag', // fragment
+  'user@example.com',         // userinfo
+  'user:pass@example.com',    // userinfo
+  'ftp://example.com',        // non-http scheme
+  'example.com:99999',        // port > 65535
+  'example.com:-1',           // negative port
+  'example.com:abc',          // non-numeric port
+  '-bad.example.com',         // leading hyphen
+  'bad-.example.com',         // trailing hyphen
+  '.example.com',             // leading dot
+  'exa mple.com',             // space
+  'exa_mple.com',             // underscore (not a DNS label)
+  'http://.example.com',      // empty label / bad hostname
+  123,                        // not a string
+  null,
+]
+
+test('#9: canonicalises valid bare hosts into the scorer\u2019s form', () => {
+  for (const [input, expected] of HOST_OK) {
+    assert.equal(_canonicalHost(input), expected, `input=${JSON.stringify(input)}`)
+  }
+})
+
+test('#9: rejects malformed / non-bare-host input outright', () => {
+  for (const input of HOST_BAD) {
+    assert.equal(_canonicalHost(input), null, `input=${JSON.stringify(input)}`)
+  }
+})
+
+// The security point: what the scorer trusts must match what was stored, so a
+// user's "trust example.com" actually suppresses alerts for the real host.
+test('#9: canonical form equals the host the scorer derives from a real URL', () => {
+  const canonical = _canonicalHost('https://API.example.com')
+  assert.equal(canonical, 'api.example.com')
+  assert.equal(new URL('https://API.example.com').host, canonical)
+  // With a port, the preserved `:port` must also line up.
+  assert.equal(_canonicalHost('https://sub.example.com:8443'), new URL('https://sub.example.com:8443').host)
 })

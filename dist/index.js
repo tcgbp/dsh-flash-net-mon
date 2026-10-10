@@ -136,6 +136,67 @@ const ENDPOINT_ENV_VARS = ['DEEPSEEK_BASE_URL', 'OPENAI_BASE_URL', 'ANTHROPIC_BA
 function _isLoopbackHost(h) {
     return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h.endsWith('.localhost');
 }
+/** A DNS name, IPv4 literal, or bracketed IPv6 literal — nothing else. */
+function _looksLikeHostname(h) {
+    // DNS name: dot-separated labels, each starting/ending alphanumeric (may
+    // contain inner hyphens). Bounded length keeps pathological labels out.
+    if (/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(h) && h.length <= 253) {
+        return true;
+    }
+    // IPv4 dotted quad.
+    if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h)) {
+        return h.split('.').every((o) => Number(o) <= 255);
+    }
+    // Bracket-wrapped IPv6 literal (as URL.host renders it).
+    return /^\[[0-9a-f:.]+\]$/i.test(h);
+}
+/**
+ * #9 — canonicalise and strictly validate one user-supplied host-whitelist
+ * entry, or return null when it is not a plain `host[:port]`.
+ *
+ * The auditor compares whitelist entries against `new URL(url).host` of real
+ * outbound requests (lowercased hostname, optional `:port`, no scheme /
+ * userinfo / path / query). The old writer instead stored the raw input, so
+ * `https://evil.com` or `example.com/path` silently never matched the actual
+ * `evil.com` / `example.com` host — the user believed they had trusted a host
+ * that kept alerting. This replaces raw storage with the same canonical form
+ * the scorer uses, and rejects anything that is not a bare host[:port].
+ */
+export function _canonicalHost(raw) {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    if (!s)
+        return null;
+    let u;
+    try {
+        // Accept an optional http(s):// prefix, defaulting to http:// for the bare
+        // host form, purely so URL parsing can do the heavy lifting.
+        u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : 'http://' + s);
+    }
+    catch (_) {
+        return null;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:')
+        return null;
+    // Reject userinfo, paths, query and fragments.
+    if (u.username || u.password)
+        return null;
+    if (u.pathname && u.pathname !== '/')
+        return null;
+    if (u.search || u.hash)
+        return null;
+    const hostname = u.hostname.toLowerCase();
+    if (!hostname || !_looksLikeHostname(hostname))
+        return null;
+    // Validate an explicit port.
+    if (u.port) {
+        const p = Number(u.port);
+        if (!Number.isInteger(p) || p < 0 || p > 65535)
+            return null;
+    }
+    // Canonical form: lowercased hostname plus `:port` when one was given —
+    // exactly the `host` the scorer sees from `new URL(url).host`.
+    return (u.hostname + (u.port ? ':' + u.port : '')).toLowerCase();
+}
 /**
  * Turn one configured endpoint into a trusted host, or null when we are not
  * willing to trust it on the user's behalf.
@@ -1071,15 +1132,14 @@ export function apply(ctx, config) {
                         sendJson(res, 400, { error: 'hosts must be strings' });
                         return;
                     }
-                    try {
-                        // Validate: each entry must parse as a valid host (optionally :port).
-                        const s = h.trim();
-                        if (!s)
-                            continue;
-                        new URL('http://' + s.replace(/^https?:\/\//i, ''));
-                        hosts.push(s.toLowerCase());
+                    // #9: strict canonicalise → reject scheme/userinfo/path/query/malformed
+                    // port and store the exact `host[:port]` the scorer compares against,
+                    // so trust actually matches and bad input is loudly refused.
+                    const canonical = _canonicalHost(h);
+                    if (canonical) {
+                        hosts.push(canonical);
                     }
-                    catch (_) {
+                    else if (h.trim()) {
                         sendJson(res, 400, { error: 'Invalid host: ' + h });
                         return;
                     }

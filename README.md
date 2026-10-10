@@ -227,6 +227,16 @@ change, so removing a provider removes the trust. The whitelist tab's read-only
 A user whitelist entry covers **its subdomains** (adding `example.com` trusts
 `api.example.com`), matching the semantics `NO_PROXY` uses elsewhere.
 
+Entries are strictly canonicalised before being stored (and before persisting via the
+settings service). Only a bare `host[:port]` is accepted: an optional `http(s)://`
+prefix is stripped, hostname is lowercased, an explicit port must be an integer in
+`0–65535`, and anything carrying a path, query, fragment or `user@` info is rejected.
+The stored form is exactly the `host` value the scorer derives from a real outbound URL,
+so "trust `example.com`" reliably matches the real `example.com` — earlier versions
+stored the raw input, which silently failed to suppress alerts when a scheme/path/port
+mismatch slipped in. Malformed input is refused with `400` instead of being trusted on
+the user's behalf.
+
 Plugin attribution resolves in this order: `AsyncLocalStorage` context (seeded by any
 plugin) → a `node_modules/<pkg>/` hint in the stack frames → `unknown`. **`unknown` is
 itself a meaningful alert signal** ("anonymous code is sending data") and is never
