@@ -313,9 +313,11 @@ tarball the dsh-market entry points at.
   from the initial target). **Request and response bodies are never read, and
   header values are never recorded.** The response object is handed back to the caller
   untouched.
-- **No stream consumption**: an opaque request body counts as 0 bytes (better to report
-  0 than to swallow the data); a response with no `content-length` counts as `-1`, and a
-  response that never arrived is `-1` bytes with status `0`.
+- **No stream consumption**: an opaque request body (a stream) still reports its size
+  when the caller set an explicit `Content-Length` header — so a large streamed upload
+  is no longer invisible to `large-upload`. Without that header it counts as 0 bytes
+  (better to report 0 than to swallow the stream); a response with no `content-length`
+  counts as `-1`, and a response that never arrived is `-1` bytes with status `0`.
 - **History is memory-only**: a ring buffer capped by `netLogCap`, oldest dropped first,
   lost on restart — the audit log is session data, not user data that needs persisting.
 - **Global reach**: the tracer wraps `globalThis.fetch` (Node 18+ undici; `ctx.http` and

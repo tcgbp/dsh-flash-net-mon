@@ -9,7 +9,7 @@
 // No test framework dependency is needed: Node's built-in `node:test` runs it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { NetworkMonitor } from '../dist/index.js'
+import { NetworkMonitor, _estimateReqBytes } from '../dist/index.js'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
   return mon.record(
@@ -159,4 +159,35 @@ test('clear wipes ring buffer, sequence and frequency state', () => {
   const e = rec(m)
   assert.equal(e.seq, 1)
   assert.ok(e.flags.includes('new-host'))
+})
+
+// ── _estimateReqBytes — #2 streaming body sizing ──────────────────────────
+
+test('#2: direct bodies size lexically', () => {
+  assert.equal(_estimateReqBytes('héllo'), Buffer.byteLength('héllo', 'utf8'))
+  assert.equal(_estimateReqBytes(Buffer.from('abc')), 3)
+  assert.equal(_estimateReqBytes(new URLSearchParams('a=1&b=2')), 7)
+  const ab = new ArrayBuffer(8)
+  assert.equal(_estimateReqBytes(ab), 8)
+  assert.equal(_estimateReqBytes(new Uint8Array(5)), 5)
+})
+
+test('#2: a streamed body with Content-Length reports that length', () => {
+  // ReadableStream has no size we can read lexically, so sizing falls back to
+  // the caller's Content-Length header — exactly the large-upload blind spot.
+  const rs = new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1, 2, 3])) } })
+  assert.equal(_estimateReqBytes(rs), 0) // no header → unknown
+  assert.equal(_estimateReqBytes(rs, 2048), 2048) // header present → sized
+})
+
+test('#2: streamed body with Content-Length trips large-upload', () => {
+  const m = new NetworkMonitor(100)
+  // Simulate what the tracer now does: pass the parsed Content-Length through.
+  const e = m.record(
+    { method: 'POST', url: 'https://upload.example/in', reqBytes: _estimateReqBytes(new ReadableStream(), 4096), resBytes: 100, status: 200, durationMs: 10, tls: true },
+    'test',
+  )
+  assert.equal(e.risk, 60) // 30 unknown + 25 large-upload + 5 new-host
+  assert.ok(e.flags.includes('large-upload'))
+  assert.notEqual(e.reqBytes, 0)
 })

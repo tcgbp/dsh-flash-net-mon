@@ -387,24 +387,82 @@ function refreshConfiguredEndpoints(source) {
 /**
  * Estimate the byte size of a fetch RequestInit body WITHOUT reading its
  * content — sizing only, never capturing data.
+ *
+ * Directly measurable bodies (string / buffer / params / blob / arraybuffer)
+ * are sized lexically. Streams and other opaque bodies cannot be sized without
+ * consuming them, so we fall back to an explicit `Content-Length` header when
+ * the caller supplied one — that keeps a large streamed upload from silently
+ * reading as 0 bytes and never tripping `large-upload`. When neither applies we
+ * report 0 (better than swallowing the stream).
  */
-function _estimateReqBytes(body) {
-    if (body == null)
-        return 0;
-    if (typeof body === 'string')
-        return Buffer.byteLength(body, 'utf8');
-    if (Buffer.isBuffer(body))
-        return body.byteLength;
-    if (body instanceof URLSearchParams)
-        return Buffer.byteLength(body.toString(), 'utf8');
-    if (body instanceof Blob)
-        return typeof body.size === 'number' ? body.size : 0;
-    if (body instanceof ArrayBuffer)
-        return body.byteLength;
-    if (ArrayBuffer.isView(body))
-        return body.byteLength;
-    // Streams / other: unknowable without consuming — report 0 rather than swallow.
+export function _estimateReqBytes(body, contentLength) {
+    if (body != null) {
+        if (typeof body === 'string')
+            return Buffer.byteLength(body, 'utf8');
+        if (Buffer.isBuffer(body))
+            return body.byteLength;
+        if (body instanceof URLSearchParams)
+            return Buffer.byteLength(body.toString(), 'utf8');
+        if (body instanceof Blob)
+            return typeof body.size === 'number' ? body.size : 0;
+        if (body instanceof ArrayBuffer)
+            return body.byteLength;
+        if (ArrayBuffer.isView(body))
+            return body.byteLength;
+    }
+    // Streams / other: unknowable without consuming. Use an explicit Content-Length
+    // if the caller set one, otherwise report 0 rather than swallow the body.
+    if (typeof contentLength === 'number' && contentLength >= 0)
+        return contentLength;
     return 0;
+}
+/**
+ * Read a `Content-Length` value from fetch's headers, whichever shape they take
+ * (undici `Headers`, an array of `[k, v]` pairs, or a plain object). Returns the
+ * parsed non-negative length when present, else `undefined` — never swallows the
+ * body, only reads the header metadata.
+ */
+function _contentLengthOf(headers) {
+    if (!headers)
+        return undefined;
+    let get;
+    try {
+        get = headers.get;
+    }
+    catch (_) {
+        get = undefined;
+    }
+    if (typeof get === 'function') {
+        try {
+            const v = headers.get('content-length');
+            const n = v == null ? NaN : parseInt(String(v), 10);
+            return Number.isFinite(n) && n >= 0 ? n : undefined;
+        }
+        catch (_) {
+            return undefined;
+        }
+    }
+    if (Array.isArray(headers)) {
+        for (const kv of headers) {
+            if (kv && String(kv[0]).toLowerCase() === 'content-length') {
+                const n = parseInt(String(kv[1]), 10);
+                return Number.isFinite(n) && n >= 0 ? n : undefined;
+            }
+        }
+        return undefined;
+    }
+    if (typeof headers === 'object') {
+        try {
+            for (const k of Object.keys(headers)) {
+                if (k.toLowerCase() === 'content-length') {
+                    const n = parseInt(String(headers[k]), 10);
+                    return Number.isFinite(n) && n >= 0 ? n : undefined;
+                }
+            }
+        }
+        catch (_) { /* ignore */ }
+    }
+    return undefined;
 }
 /**
  * Install a global outbound-request tracer by wrapping `globalThis.fetch`.
@@ -424,7 +482,11 @@ function installRequestTracer() {
     const wrap = async (input, init) => {
         const method = (init && init.method) || (typeof input === 'string' ? 'GET' : (input && input.method) || 'GET');
         const url = typeof input === 'string' ? input : (input && input.url) || '';
-        const reqBytes = _estimateReqBytes(init && init.body);
+        // For a streamed/opaque body we fall back to the caller's Content-Length.
+        // It may live on `init.headers` or on the `Request` object itself.
+        const inputHeaders = input && typeof input.headers?.get === 'function' ? input.headers : undefined;
+        const clFromHeaders = _contentLengthOf((init && init.headers) ?? inputHeaders);
+        const reqBytes = _estimateReqBytes(init && init.body, clFromHeaders);
         // Capture pluginId synchronously — before `await` — so the call stack
         // still contains the caller's frames.  After `await`, only the microtask
         // resume frame remains and _pluginIdFromStack() loses the real caller.
