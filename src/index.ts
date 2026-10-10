@@ -656,14 +656,27 @@ export class NetworkMonitor {
   }
 }
 
-/** Module-level so the tracer and routes share one instance per process. */
-let _networkMonitor: NetworkMonitor | null = null
-/** The wrapper we installed, saved so dispose can restore the original fetch. */
-let _restoreFetch: (() => void) | null = null
-/** Original http/https `.request` refs, restored on dispose. */
-let _restoreHttp: (() => void) | null = null
-/** Endpoint hosts derived from DSH's own configuration; also read by the GET route. */
-let _configuredEndpoints: string[] = []
+/**
+ * Per-instance audit state (introduced for #10).
+ *
+ * Cordis plugins must not cache mutable state at module scope: a second
+ * `apply()` (nested context, remount, or two mounted copies) would otherwise
+ * share one monitor and one set of restorers, so one dispose could tear the
+ * other's tracer out from under it. Every `apply()` instead owns its own
+ * `MonitorRuntime` and threads it through the tracers, the endpoint refresher
+ * and the HTTP routes; disposing that instance only touches its own object.
+ */
+interface MonitorRuntime {
+  monitor: NetworkMonitor | null
+  restoreFetch: (() => void) | null
+  restoreHttp: (() => void) | null
+  endpoints: string[]
+}
+
+/** Fresh per-instance runtime. The returned object is never shared. */
+export function mkRuntime(): MonitorRuntime {
+  return { monitor: null, restoreFetch: null, restoreHttp: null, endpoints: [] }
+}
 
 /**
  * Recompute the endpoints DSH is configured to call and hand them to the
@@ -677,7 +690,7 @@ let _configuredEndpoints: string[] = []
  * distinguishable from what we inferred. Removing the provider drops the trust
  * again on the next refresh.
  */
-function refreshConfiguredEndpoints(source: any): string[] {
+function refreshConfiguredEndpoints(runtime: MonitorRuntime, source: any): string[] {
   const out = new Set<string>()
   try {
     const descriptors = source && typeof source.describe === 'function' ? source.describe() : []
@@ -692,9 +705,9 @@ function refreshConfiguredEndpoints(source: any): string[] {
     const h = _endpointHost(process.env[name])
     if (h) out.add(h)
   }
-  _configuredEndpoints = Array.from(out).sort()
-  if (_networkMonitor) _networkMonitor.setEndpointTrusted(_configuredEndpoints)
-  return _configuredEndpoints
+  runtime.endpoints = Array.from(out).sort()
+  if (runtime.monitor) runtime.monitor.setEndpointTrusted(runtime.endpoints)
+  return runtime.endpoints
 }
 
 /**
@@ -774,7 +787,7 @@ function _contentLengthOf(headers: unknown): number | undefined {
  *
  * Returns a disposer that restores the original fetch and stops capture.
  */
-function installRequestTracer(): () => void {
+function installRequestTracer(runtime: MonitorRuntime): () => void {
   const origFetch = globalThis.fetch
   // Guard against double-install on hot reload / re-apply.
   if (!origFetch || (origFetch as any).__dockFlashTraced) return () => {}
@@ -805,19 +818,19 @@ function installRequestTracer(): () => void {
       // see where the request *actually* landed, not just where it was aimed.
       const finalUrl = res && typeof res.url === 'string' && res.url ? res.url : undefined
       const end = Date.now()
-      if (_networkMonitor) {
+      if (runtime.monitor) {
         try {
-          _networkMonitor.record({ method, url, finalUrl, reqBytes, resBytes, status, durationMs: end - started, tls }, callerPluginId)
+          runtime.monitor.record({ method, url, finalUrl, reqBytes, resBytes, status, durationMs: end - started, tls }, callerPluginId)
         } catch (_) {}
       }
       return res
     } catch (e) {
       const end = Date.now()
-      if (_networkMonitor) {
+      if (runtime.monitor) {
         try {
           // On an aborted/rejected request (DNS / refused / timeout) there is no
           // final URL to record — the response never arrived.
-          _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: end - started, tls }, callerPluginId)
+          runtime.monitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: end - started, tls }, callerPluginId)
         } catch (_) {}
       }
       throw e
@@ -825,11 +838,11 @@ function installRequestTracer(): () => void {
   }
   ;(wrap as any).__dockFlashTraced = true
   ;(globalThis as any).fetch = wrap
-  _restoreFetch = () => {
+  runtime.restoreFetch = () => {
     if ((globalThis as any).fetch === wrap) (globalThis as any).fetch = origFetch
-    _restoreFetch = null
+    runtime.restoreFetch = null
   }
-  return _restoreFetch
+  return runtime.restoreFetch
 }
 
 /**
@@ -848,7 +861,7 @@ function installRequestTracer(): () => void {
  *
  * Returns a disposer that restores both originals.
  */
-export function installHttpTracer(): () => void {
+export function installHttpTracer(runtime: MonitorRuntime = mkRuntime()): () => void {
   // Keep the originals so dispose can restore exactly what we replaced.
   const mods = [nodeHttp as any, nodeHttps as any]
   const origs = [nodeHttp.request, nodeHttps.request]
@@ -889,16 +902,16 @@ export function installHttpTracer(): () => void {
               resBytes = cl != null ? (parseInt(String(cl), 10) || -1) : -1
             }
           } catch (_) {}
-          if (_networkMonitor) {
+          if (runtime.monitor) {
             try {
-              _networkMonitor.record({ method, url, reqBytes, resBytes, status, durationMs: Date.now() - started, tls: isHttps }, callerPluginId)
+              runtime.monitor.record({ method, url, reqBytes, resBytes, status, durationMs: Date.now() - started, tls: isHttps }, callerPluginId)
             } catch (_) {}
           }
         })
         req.on('error', () => {
-          if (_networkMonitor) {
+          if (runtime.monitor) {
             try {
-              _networkMonitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: Date.now() - started, tls: isHttps }, callerPluginId)
+              runtime.monitor.record({ method, url, reqBytes, resBytes: -1, status: 0, durationMs: Date.now() - started, tls: isHttps }, callerPluginId)
             } catch (_) {}
           }
         })
@@ -907,15 +920,15 @@ export function installHttpTracer(): () => void {
     }
     ;(mod.request as any).__dockFlashTraced = true
   }
-  _restoreHttp = () => {
+  runtime.restoreHttp = () => {
     for (let i = 0; i < mods.length; i++) {
       if (mods[i].request && (mods[i].request as any).__dockFlashTraced) {
         mods[i].request = origs[i]
       }
     }
-    _restoreHttp = null
+    runtime.restoreHttp = null
   }
-  return _restoreHttp
+  return runtime.restoreHttp
 }
 
 /** Send a JSON response with no-store cache control. */
@@ -953,7 +966,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
     settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber))
     // Trust the endpoints DSH itself is configured to call, so the user's own
     // providers do not read as "unknown hosts" (see refreshConfiguredEndpoints).
-    refreshConfiguredEndpoints(settingsCtx.settings)
+    refreshConfiguredEndpoints(runtime, settingsCtx.settings)
     // Re-evaluate the audit toggle here too: at apply() time the resolved
     // config may not yet reflect the PERSISTED netAuditEnabled (the settings
     // service injects asynchronously). reconfigureAudit() reads the volatile
@@ -963,7 +976,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
     // callback fires after apply() has fully initialised it.
     try { reconfigureAudit() } catch (_) {}
     settingsCtx.effect(() => settingsCtx.on('settings/document-updated' as any, () => {
-      refreshConfiguredEndpoints(settingsCtx.settings)
+      refreshConfiguredEndpoints(runtime, settingsCtx.settings)
     }))
   })
 
@@ -982,37 +995,41 @@ export function apply(ctx: Context, config: NetMonConfig) {
   // no-op and the store stays memory-only (the plugin's original behaviour).
   const baseDir = typeof (ctx as any).baseDir === 'string' ? (ctx as any).baseDir : undefined
   const persistDir = baseDir ? join(baseDir, 'dsh-flash-net-mon') : undefined
+  // #10: every apply() owns its own audit state (monitor + restorers + trusted
+  // endpoints). Nothing lives at module scope, so a second instance or a
+  // remount can never stomp the first's tracer or persist state.
+  const runtime = mkRuntime()
   const reconfigureAudit = () => {
     if (config.netAuditEnabled.get()) {
       // Enabled: ensure the monitor exists, refresh cap/whitelist, and install
-      // the tracer once. Both `_restoreFetch === null` and `__dockFlashTraced`
+      // the tracer once. Both `runtime.restoreFetch === null` and `__dockFlashTraced`
       // are kept as guards — the latter also protects against another plugin
       // having wrapped fetch (installRequestTracer checks it again internally).
-      if (!_networkMonitor) _networkMonitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP, persistDir)
-      _networkMonitor.setCap(config.netLogCap.get())
-      _networkMonitor.setTtl(config.netLogTtlSec.get())
-      _networkMonitor.setUserTrusted(Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get()! : [])
-      _networkMonitor.setPluginTrusted(Array.isArray(config.netPluginWhitelist.get()) ? config.netPluginWhitelist.get()! : [])
+      if (!runtime.monitor) runtime.monitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP, persistDir)
+      runtime.monitor.setCap(config.netLogCap.get())
+      runtime.monitor.setTtl(config.netLogTtlSec.get())
+      runtime.monitor.setUserTrusted(Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get()! : [])
+      runtime.monitor.setPluginTrusted(Array.isArray(config.netPluginWhitelist.get()) ? config.netPluginWhitelist.get()! : [])
       // Derive the trusted endpoints again: settings may have become available
       // (or changed) while auditing was off, in which case the inject callback
       // had no live monitor to hand the list to.
-      try { refreshConfiguredEndpoints(ctx.get ? ctx.get('settings') : null) } catch (_) {}
-      _networkMonitor.setEndpointTrusted(_configuredEndpoints)
-      if (_restoreFetch === null && !(globalThis as any).fetch?.__dockFlashTraced) {
-        installRequestTracer()
+      try { refreshConfiguredEndpoints(runtime, ctx.get ? ctx.get('settings') : null) } catch (_) {}
+      runtime.monitor.setEndpointTrusted(runtime.endpoints)
+      if (runtime.restoreFetch === null && !(globalThis as any).fetch?.__dockFlashTraced) {
+        installRequestTracer(runtime)
       }
-      if (_restoreHttp === null) {
-        installHttpTracer()
+      if (runtime.restoreHttp === null) {
+        installHttpTracer(runtime)
       }
-    } else if (_restoreFetch !== null || _restoreHttp !== null) {
+    } else if (runtime.restoreFetch !== null || runtime.restoreHttp !== null) {
       // Disabled: stop wrapping fetch (restores the original) and release the
       // monitor so no further recording happens. The routes read the nulled
       // monitor as empty. Flush the seen-host store first so the reset (or the
       // latest frequencies) lands on disk.
-      if (_restoreFetch) _restoreFetch()
-      if (_restoreHttp) _restoreHttp()
-      if (_networkMonitor) _networkMonitor.flush()
-      _networkMonitor = null
+      if (runtime.restoreFetch) runtime.restoreFetch()
+      if (runtime.restoreHttp) runtime.restoreHttp()
+      if (runtime.monitor) runtime.monitor.flush()
+      runtime.monitor = null
     }
   }
   reconfigureAudit()
@@ -1021,10 +1038,10 @@ export function apply(ctx: Context, config: NetMonConfig) {
     // Read the current restorers at teardown time (they null themselves), so a
     // toggle before dispose is also correctly undone — fetch and http both.
     return () => {
-      if (_restoreFetch) _restoreFetch()
-      if (_restoreHttp) _restoreHttp()
-      if (_networkMonitor) _networkMonitor.flush()
-      _networkMonitor = null
+      if (runtime.restoreFetch) runtime.restoreFetch()
+      if (runtime.restoreHttp) runtime.restoreHttp()
+      if (runtime.monitor) runtime.monitor.flush()
+      runtime.monitor = null
     }
   })
 
@@ -1042,7 +1059,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
   // which is not a direct dependency; cast through `any` for the register calls.
   ctx.inject(['webServer'], (wsCtx: any) => {
     // C · Network audit (outbound request auditor) ──────────────────────
-    // These routes read `_networkMonitor`, which exists ONLY while
+    // These routes read `runtime.monitor`, which exists ONLY while
     // `netAuditEnabled` is on; when the auditor is off they answer empty
     // lists rather than 500 (K4: audit is opt-in, nothing here wraps fetch).
 
@@ -1055,7 +1072,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
         // state), so the stream log and the alert stream both come back empty —
         // what the panel 清空 button must do, not just blank the displayed list.
         if (req.method === 'DELETE') {
-          if (_networkMonitor) _networkMonitor.clear()
+          if (runtime.monitor) runtime.monitor.clear()
           sendJson(res, 200, { ok: true })
           return
         }
@@ -1065,12 +1082,12 @@ export function apply(ctx: Context, config: NetMonConfig) {
           res.end()
           return
         }
-        if (!_networkMonitor) { sendJson(res, 200, { entries: [], offset: 0 }) ; return }
+        if (!runtime.monitor) { sendJson(res, 200, { entries: [], offset: 0 }) ; return }
         const u = new URL(req.url || '/', 'http://localhost')
         const offset = Math.max(0, parseInt(u.searchParams.get('offset') || '0', 10) || 0)
         let limit = parseInt(u.searchParams.get('limit') || '100', 10) || 100
         limit = Math.max(1, Math.min(limit, 500))
-        const all = _networkMonitor.snapshot().reverse()
+        const all = runtime.monitor.snapshot().reverse()
         const entries = all.slice(offset, offset + limit)
         sendJson(res, 200, { entries, offset, limit, total: all.length })
       },
@@ -1087,9 +1104,9 @@ export function apply(ctx: Context, config: NetMonConfig) {
           res.end()
           return
         }
-        if (!_networkMonitor) { sendJson(res, 200, { alerts: [] }) ; return }
+        if (!runtime.monitor) { sendJson(res, 200, { alerts: [] }) ; return }
         const threshold = config.netSuspectWarn.get() ?? DEFAULT_NET_SUSPECT_WARN
-        sendJson(res, 200, { alerts: _networkMonitor.alerts(threshold).reverse() })
+        sendJson(res, 200, { alerts: runtime.monitor.alerts(threshold).reverse() })
       },
     }), 'dsh-flash-net-mon: GET /plugins/dsh-flash-net-mon/network-alerts')
 
@@ -1109,7 +1126,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
           sendJson(res, 200, {
             hosts: Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get()! : [],
             builtin: Array.from(BUILTIN_TRUSTED_HOSTS).sort(),
-            endpoints: _configuredEndpoints,
+            endpoints: runtime.endpoints,
           })
           return
         }
@@ -1138,7 +1155,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
             return
           }
         }
-        if (_networkMonitor) _networkMonitor.setUserTrusted(hosts)
+        if (runtime.monitor) runtime.monitor.setUserTrusted(hosts)
         // Persist so the setting survives restart. If the remote settings
         // service is unavailable we still apply the in-memory override above.
         let rs: any = null
@@ -1177,7 +1194,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
           if (!s) continue
           plugins.push(s.toLowerCase())
         }
-        if (_networkMonitor) _networkMonitor.setPluginTrusted(plugins)
+        if (runtime.monitor) runtime.monitor.setPluginTrusted(plugins)
         let rs: any = null
         try { rs = ctx.get ? ctx.get('remote.settings') ?? (ctx as any).remote?.settings ?? null : null } catch (_) { rs = null }
         if (rs && typeof rs.update === 'function') {

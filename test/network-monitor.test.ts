@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -437,4 +437,24 @@ test('#9: canonical form equals the host the scorer derives from a real URL', ()
   assert.equal(new URL('https://API.example.com').host, canonical)
   // With a port, the preserved `:port` must also line up.
   assert.equal(_canonicalHost('https://sub.example.com:8443'), new URL('https://sub.example.com:8443').host)
+})
+
+// ── #10 per-instance (ctx-scoped) audit state ────────────────────────────
+test('#10: mkRuntime() returns a fresh, independent instance every call', () => {
+  const a = mkRuntime()
+  const b = mkRuntime()
+  assert.notEqual(a, b)
+  // Distinct monitor/restorer slots: populating one never leaks into the other
+  // (the old module-level singletons shared these across every apply()).
+  assert.equal(a.monitor, null)
+  assert.equal(b.monitor, null)
+  a.monitor = new NetworkMonitor(10)
+  assert.ok(a.monitor instanceof NetworkMonitor)
+  assert.equal(b.monitor, null, 'a second apply() must not see the first\u2019s monitor')
+  a.restoreFetch = () => {}
+  a.restoreHttp = () => {}
+  a.endpoints = ['api.example.com']
+  assert.equal(b.restoreFetch, null)
+  assert.equal(b.restoreHttp, null)
+  assert.deepEqual(b.endpoints, [])
 })

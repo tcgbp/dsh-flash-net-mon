@@ -382,5 +382,9 @@ tarball the dsh-market entry points at.
   three entries and the `__dockFlashTraced` mark prevents a double wrapper after a hot
   reload or a repeated `apply()`. Neither wrapper reads or mutates request/response
   bodies — only metadata.
+- **Per-instance state**: the auditor keeps its monitor, tracer-restore hooks and
+  trusted-endpoint list in a per-`apply()` object rather than at module scope. A second
+  mount (nested context or a remount) therefore owns its own state and disposing one
+  instance can never tear out another's tracer or wipe its monitor.
 - **UI language**: the panel and the alert text carry both Chinese and English, and
   follow DSH's language setting.
