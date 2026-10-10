@@ -123,7 +123,16 @@ URL 解析不出主机时（相对地址，如 `/x`）不参与评分：记 0 �
 
 用户白名单里的**顶级域名覆盖其子域**（加入 `example.com` 即信任 `api.example.com`），与别处 `NO_PROXY` 的语义一致。
 
-插件归属的解析顺序：`AsyncLocalStorage` 上下文（目前仅本包内部预留，等未来的 fork 钩子来填）→ 栈帧里的 `node_modules/<pkg>/` 提示 → `unknown`。**`unknown` 本身就是有意义的告警信号**（「有匿名代码在发数据」），不会被静默丢弃。⚠ 栈帧启发式是脆弱的（在打包器 shim 或运行时包装层之间调用会误判），只作为尽力而为的兜底。
+插件归属的解析顺序：`AsyncLocalStorage` 上下文（任意插件经 `withPluginContext` 播种）→ 栈帧里的 `node_modules/<pkg>/` 提示 → `unknown`。**`unknown` 本身就是有意义的告警信号**（「有匿名代码在发数据」），不会被静默丢弃。⚠ 栈帧启发式是脆弱的（在打包器 shim 或运行时包装层之间调用会误判），只作为尽力而为的兜底。
+
+想让自己的出站调用被精确归属的 DSH 插件，用 `withPluginContext(pluginId, fn)` 包一层即可：
+
+```ts
+import { withPluginContext } from 'dsh-flash-net-mon'
+withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都归到 'my-plugin' */ })
+```
+
+异步上下文在 `await` 后依然存活（async_hooks），所以恢复后的回调也保持同一个 pluginId。任何上下文之外，审计器先回退到栈启发式，最后才是 `unknown`。
 
 ## HTTP 路由
 

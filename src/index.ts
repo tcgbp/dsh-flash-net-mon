@@ -79,11 +79,32 @@ export const Config = Schema.object({
 
 /**
  * AsyncLocalStorage for propagating the caller's plugin identity through
- * the fetch wrapper. Currently private to this package — a future fork-hook
- * could adopt it without restructuring.
+ * the fetch wrapper. Public plugins adopt it via `withPluginContext`; the
+ * auditor reads it in `resolvePluginId()`.
  */
 const _requestContext = new AsyncLocalStorage<{ pluginId: string }>()
 const _UNKNOWN_PLUGIN = 'unknown'
+
+/**
+ * #7 — make the reserved AsyncLocalStorage hook real. A DSH plugin that wants
+ * its own outbound calls attributed precisely (instead of falling through to
+ * the fragile stack heuristic, or degrading to `unknown`) wraps the call in
+ * this helper, which seeds `_requestContext` for everything synchronously
+ * issued (and, thanks to async_hooks, everything the callback later awaits and
+ * re-enters) between the wrapper and the tracer:
+ *
+ *     import { withPluginContext } from 'dsh-flash-net-mon'
+ *     withPluginContext('my-plugin', () => {
+ *       // sync fetch() / http.request() here are attributed to 'my-plugin'
+ *     })
+ *
+ * `T` may be a plain value or a Promise; the async context survives `await`,
+ * so the recorded request carries the same pluginId even when the callback
+ * resumes after the tracer's synchronous capture point.
+ */
+export function withPluginContext<T>(pluginId: string, fn: () => T): T {
+  return _requestContext.run({ pluginId }, fn)
+}
 
 /** A single audited request's metadata record. No body/header values, ever. */
 export interface NetworkEntry {
@@ -112,8 +133,8 @@ export interface NetworkEntry {
 /**
  * Resolve which plugin initiated a request.
  *
- * Priority: AsyncLocalStorage context (populated only if a future fork-hook
- * calls `_requestContext.run(...)`) → stack-trace hint → `unknown`. `unknown`
+ * Priority: AsyncLocalStorage context (seeded by any plugin via
+ * `withPluginContext`) → stack-trace hint → `unknown`. `unknown`
  * is itself a meaningful, alarming signal ("something anonymous is sending
  * data"), never a silent discard.
  *
@@ -122,7 +143,7 @@ export interface NetworkEntry {
  * a bundler shim or a runtime wrapper that sits between the real caller and
  * us. It is kept as a best-effort fallback only.
  */
-function resolvePluginId(): string {
+export function resolvePluginId(): string {
   const store = _requestContext.getStore()
   if (store && store.pluginId) return store.pluginId
   const hint = _pluginIdFromStack()

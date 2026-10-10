@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -353,4 +353,28 @@ test('#3: a real native http request still completes under the tracer', async ()
     disposer()
     await new Promise<void>((r) => server.close(() => r()))
   }
+})
+
+// ── #7 AsyncLocalStorage plugin attribution ──────────────────────────────
+test('#7: withPluginContext seeds the attribution for a synchronous call', () => {
+  const got = withPluginContext('my-plugin', () => resolvePluginId())
+  assert.equal(got, 'my-plugin')
+})
+
+test('#7: attribution survives await inside the wrapped callback', async () => {
+  const got = await withPluginContext('my-plugin', async () => {
+    await sleep(10)
+    return resolvePluginId()
+  })
+  assert.equal(got, 'my-plugin')
+})
+
+test('#7: nested context wins over an outer one (innermost plugin is caller)', () => {
+  const got = withPluginContext('outer', () => withPluginContext('inner', () => resolvePluginId()))
+  assert.equal(got, 'inner')
+  // Returning to the outer scope restores the outer id.
+  assert.equal(withPluginContext('outer', () => {
+    withPluginContext('inner', () => resolvePluginId())
+    return resolvePluginId()
+  }), 'outer')
 })

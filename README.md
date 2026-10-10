@@ -227,12 +227,23 @@ change, so removing a provider removes the trust. The whitelist tab's read-only
 A user whitelist entry covers **its subdomains** (adding `example.com` trusts
 `api.example.com`), matching the semantics `NO_PROXY` uses elsewhere.
 
-Plugin attribution resolves in this order: `AsyncLocalStorage` context (reserved for
-this package's own use today, waiting for a future fork hook) → a `node_modules/<pkg>/`
-hint in the stack frames → `unknown`. **`unknown` is itself a meaningful alert
-signal** ("anonymous code is sending data") and is never silently dropped. ⚠ The
-stack-frame heuristic is fragile (it misattributes when the call passes through a
-bundler shim or a runtime wrapper); treat it as best effort.
+Plugin attribution resolves in this order: `AsyncLocalStorage` context (seeded by any
+plugin) → a `node_modules/<pkg>/` hint in the stack frames → `unknown`. **`unknown` is
+itself a meaningful alert signal** ("anonymous code is sending data") and is never
+silently dropped. ⚠ The stack-frame heuristic is fragile (it misattributes when the call
+passes through a bundler shim or a runtime wrapper); treat it as best effort.
+
+A DSH plugin that wants its own outbound calls attributed precisely wraps them in
+`withPluginContext(pluginId, fn)`:
+
+```ts
+import { withPluginContext } from 'dsh-flash-net-mon'
+withPluginContext('my-plugin', () => { /* fetch() / http.request() here are 'my-plugin' */ })
+```
+
+The async context survives `await` (async_hooks), so even a resumed callback keeps its
+identity. Outside any context the auditor falls back to the stack heuristic, then
+`unknown`.
 
 ## HTTP routes
 
