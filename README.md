@@ -148,7 +148,7 @@ Every outbound request scores 0–100:
 | Factor | Adds |
 | --- | --- |
 | Unknown host: not on the built-in trusted list / user host whitelist, and not from a trusted plugin (baseline) | +30 |
-| First time this host is seen (`new-host`) | +5 |
+| First time this host is seen (`new-host`) | +15 |
 | Large upload: `POST`/`PUT`/`PATCH` with a body over 1 KB (`large-upload`) | +25 |
 | Plaintext: not `https:` (`plaintext`) | +20 |
 | High frequency: the same unknown host seen ≥ 3 times (`high-frequency`) | +15 |
@@ -164,16 +164,38 @@ trusted) raises nothing. Note the final host comes from the SDK's `res.url` afte
 following redirects, so a bare `302` followed by a non-HTTP client API won't be
 caught — only what Node's fetch follows.
 
-`new-host` is +5 rather than +15: the seen-host counter is memory-only, so after a
-restart every host counts as "first time"; 30 + 5 = 35 stays below `netSuspectWarn`
-(40 by default), so an ordinary new connection no longer alerts on its own (the flag is
-still recorded). A first contact that also uploads or is plaintext still alerts
-(60 / 55).
+Unlike `redirected-host`, `new-host` is additive. It is +15, not +5, because the
+seen-host frequency is now **persisted** (see "Seen-host frequency persistence"
+below): a host seen before a restart is *not* flagged new anymore, so a genuine
+first contact is the *rare* case worth a warning by itself — 30 + 15 = 45 crosses
+`netSuspectWarn` (40 by default). A first contact that also uploads or is
+plaintext scores 70 / 65. Without a writable data dir the store degrades to
+memory-only and every host reads as new again after a restart (`new-host` then
+fires on first contact each session, same flag, same margin — just less precise).
 
 A URL that names no host (a relative one, e.g. `/x`) is not scored at all: it records 0
 with a `relative-url` flag and stays in the log, and it is kept **out** of the host
 frequency counter — otherwise every relative URL would pile onto the same `?` key and no
 whitelist entry could ever match it.
+
+## Seen-host frequency persistence
+
+The `host → {count, lastSeen}` table that drives both `new-host` and `high-frequency`
+is the **only** thing written to disk. It lives at
+`<DSH data dir>/dsh-flash-net-mon/seen-hosts.json`, where the data dir is DSH's
+`baseDir`. When DSH does not expose a `baseDir` (or the directory is unwritable) the
+plugin degrades gracefully to memory-only — the original behaviour.
+
+Concretely:
+
+- **Restart-safe `new-host`**: a host seen before a restart is not flagged `new-host` again.
+  Only a genuinely new host is, restoring `new-host` to +15's intended rarity.
+- **Retention**: entries not seen in the last 6 hours are dropped on load and on each
+  new observation, and the table is capped at 500 hosts (least-recently-seen evicted), so
+  the file reflects recent traffic and never grows unbounded.
+- **Private**: host names only (they were already recorded in the audit log). No path,
+  body, or header data is persisted. Writes are debounced (~2.5 s) and flushed on
+  audit-off / context dispose; the clear endpoint resets the on-disk table too.
 
 **Trusted means exempt.** If the host is trusted (built-in list, user whitelist, or an
 auto-trusted endpoint) **or** the plugin is trusted, the risk is 0 and no flags are
@@ -320,6 +342,9 @@ tarball the dsh-market entry points at.
   counts as `-1`, and a response that never arrived is `-1` bytes with status `0`.
 - **History is memory-only**: a ring buffer capped by `netLogCap`, oldest dropped first,
   lost on restart — the audit log is session data, not user data that needs persisting.
+  The one exception is the **seen-host frequency** (host → count + last-seen), which is
+  persisted so `new-host` stays precise across restarts (see "Seen-host frequency
+  persistence" below). No request log entry is ever written to disk.
 - **Global reach**: the tracer wraps `globalThis.fetch` (Node 18+ undici; `ctx.http` and
   a bare `fetch()` share that entry point, so one wrapper covers both). Turning the
   switch off restores it, and the `__dockFlashTraced` mark prevents a double wrapper

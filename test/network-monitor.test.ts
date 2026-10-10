@@ -9,7 +9,10 @@
 // No test framework dependency is needed: Node's built-in `node:test` runs it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { NetworkMonitor, _estimateReqBytes } from '../dist/index.js'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes } from '../dist/index.js'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
   return mon.record(
@@ -27,32 +30,32 @@ function rec(mon, over = {}, pid = 'test-plugin') {
   )
 }
 
-test('unknown host, first contact: baseline 30 + new-host 5 = 35, normal', () => {
+test('unknown host, first contact: baseline 30 + new-host 15 = 45, alerts', () => {
   const m = new NetworkMonitor(100)
   const e = rec(m)
-  assert.equal(e.risk, 35)
+  assert.equal(e.risk, 45)
   assert.ok(e.flags.includes('unknown-host'))
   assert.ok(e.flags.includes('new-host'))
 })
 
 test('same unknown host on 3rd call gains high-frequency (+15 → 45)', () => {
   const m = new NetworkMonitor(100)
-  assert.equal(rec(m).risk, 35) // 1st: new-host
+  assert.equal(rec(m).risk, 45) // 1st: new-host (30+15)
   assert.equal(rec(m).risk, 30) // 2nd: plain unknown
-  assert.equal(rec(m).risk, 45) // 3rd: high-frequency
+  assert.equal(rec(m).risk, 45) // 3rd: high-frequency (30+15)
 })
 
-test('large upload (+25) alerts on its own with a new host (60)', () => {
+test('large upload (+25) alerts on its own with a new host (70)', () => {
   const m = new NetworkMonitor(100)
   const e = rec(m, { method: 'POST', reqBytes: 2048 })
-  assert.equal(e.risk, 60)
+  assert.equal(e.risk, 70)
   assert.ok(e.flags.includes('large-upload'))
 })
 
-test('plaintext (+20) alerts with a new host (55)', () => {
+test('plaintext (+20) alerts with a new host (65)', () => {
   const m = new NetworkMonitor(100)
   const e = rec(m, { url: 'http://unknown-evil.example/', tls: false })
-  assert.equal(e.risk, 55)
+  assert.equal(e.risk, 65)
   assert.ok(e.flags.includes('plaintext'))
 })
 
@@ -133,20 +136,20 @@ test('relative URL records 0 with relative-url flag and sits out the counter', (
 test('ring buffer drops oldest past cap; alerts() only returns >= threshold', () => {
   const m = new NetworkMonitor(2)
   m.setUserTrusted(['trusted.example'])
-  // a) trusted → 0; b) and c) unknown first contacts → 35 each.
+  // a) trusted → 0; b) and c) unknown first contacts → 45 each.
   const a = rec(m, { url: 'https://trusted.example/' })
   const b = rec(m, { url: 'https://one.example/' })
   const c = rec(m, { url: 'https://two.example/' })
   assert.equal(a.risk, 0)
-  assert.equal(b.risk, 35)
-  assert.equal(c.risk, 35)
+  assert.equal(b.risk, 45)
+  assert.equal(c.risk, 45)
   assert.equal(m.snapshot().length, 2)
   assert.equal(m.snapshot()[0].seq, b.seq) // a (oldest) was dropped
   assert.equal(m.snapshot()[1].seq, c.seq) // newest kept
   // Risk >= 30: both b and c qualify (a, at 0, is out and already dropped).
   assert.equal(m.alerts(30).length, 2)
-  // Risk >= 40: none does.
-  assert.equal(m.alerts(40).length, 0)
+  // Risk >= 60: neither b nor c (45) qualifies, and a (0) is dropped anyway.
+  assert.equal(m.alerts(60).length, 0)
 })
 
 test('clear wipes ring buffer, sequence and frequency state', () => {
@@ -187,7 +190,87 @@ test('#2: streamed body with Content-Length trips large-upload', () => {
     { method: 'POST', url: 'https://upload.example/in', reqBytes: _estimateReqBytes(new ReadableStream(), 4096), resBytes: 100, status: 200, durationMs: 10, tls: true },
     'test',
   )
-  assert.equal(e.risk, 60) // 30 unknown + 25 large-upload + 5 new-host
+  assert.equal(e.risk, 70) // 30 unknown + 25 large-upload + 15 new-host
   assert.ok(e.flags.includes('large-upload'))
   assert.notEqual(e.reqBytes, 0)
+})
+
+// ── #4 seen-host persistence ───────────────────────────────────────────────
+
+/** Drain any debounced write timer so the file is on disk before we read it. */
+function flushStore(s: SeenHostStore) {
+  s.flush()
+}
+
+test('#4: frequency survives a restart (recreating the store from disk)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-netmon-'))
+  try {
+    const store = new SeenHostStore(dir)
+    store.hit('api.example')
+    store.hit('api.example')
+    store.hit('api.example')
+    flushStore(store)
+
+    // A fresh store over the same dir must see the same stats after re-load.
+    const reloaded = new SeenHostStore(dir)
+    assert.equal(reloaded.has('api.example'), true)
+    assert.equal(reloaded.count('api.example'), 3)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#4: a host seen before a restart is NOT new-host anymore (via monitor)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-netmon-'))
+  try {
+    // First "session": host is brand new → 45.
+    const m1 = new NetworkMonitor(100, dir)
+    assert.equal(m1.record({ method: 'GET', url: 'https://persisted.example/x', reqBytes: 0, resBytes: 10, status: 200, durationMs: 5, tls: true }, 'p').risk, 45)
+    m1.flush()
+
+    // Second "session" over the same dir: same host → not new, so 30, not 45.
+    const m2 = new NetworkMonitor(100, dir)
+    const e = m2.record({ method: 'GET', url: 'https://persisted.example/x', reqBytes: 0, resBytes: 10, status: 200, durationMs: 5, tls: true }, 'p')
+    assert.equal(e.risk, 30)
+    assert.equal(e.flags.includes('new-host'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#4: clear() wipes the store AND persists the reset to disk', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-netmon-'))
+  try {
+    const store = new SeenHostStore(dir)
+    store.hit('api.example')
+    flushStore(store)
+    assert.equal(new SeenHostStore(dir).has('api.example'), true)
+
+    store.clear() // must sync the empty map immediately
+    assert.equal(store.has('api.example'), false)
+    const reloaded = new SeenHostStore(dir)
+    assert.equal(reloaded.has('api.example'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#4: retention drops hosts not seen within the window', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-netmon-'))
+  try {
+    const store = new SeenHostStore(dir)
+    store.hit('stale.example')
+    flushStore(store)
+
+    // Backdate the persisted record past the 6-hour retention window, then
+    // reload — the store must prune it on load.
+    const file = join(dir, 'seen-hosts.json')
+    const stale = Date.now() - 12 * 60 * 60 * 1000
+    writeFileSync(file, JSON.stringify({ 'stale.example': { count: 1, lastSeen: stale } }))
+
+    const reloaded = new SeenHostStore(dir)
+    assert.equal(reloaded.has('stale.example'), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

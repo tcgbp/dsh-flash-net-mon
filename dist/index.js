@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 // Default export only (`export default Schema`); there is no named `Schema`.
 import Schema from '@deepseek-ai/schemastery';
 export const name = 'dsh-flash-net-mon';
@@ -156,6 +158,148 @@ function _collectEndpointHosts(node, depth, out) {
         _collectEndpointHosts(value, depth + 1, out);
     }
 }
+/** Retention: drop a host's frequency once it has not been seen for this long. */
+const SEEN_RETENTION_MS = 6 * 60 * 60 * 1000; // 6 hours
+/** Hard cap on host-frequency entries — defends the file from unbounded growth
+ *  under a large or rotating host set. */
+const SEEN_MAX_ENTRIES = 500;
+/** Debounce for mirroring the frequency map to disk (ms). */
+const SEEN_PERSIST_DEBOUNCE_MS = 2500;
+/**
+ * Durable, restart-safe seen-host frequency.
+ *
+ * Keeps `host -> {count, lastSeen}` and, when a persist directory is supplied,
+ * mirrors it to `seen-hosts.json` there. On load it applies retention (entries
+ * last seen more than `SEEN_RETENTION_MS` ago are dropped) and a size cap, so
+ * the counters reflect recent history rather than all-time traffic and never
+ * grow unbounded. Writes are debounced; `clear()` persists the reset and
+ * `flush()` forces a write (shutdown / toggle-off / dispose).
+ *
+ * This is what restores `new-host` to its intended scarcity after a restart and
+ * lets `high-frequency` build across restarts instead of being wiped to 0. When
+ * no directory is available it degrades gracefully to memory-only, preserving
+ * the plugin's "session-scoped unless a data dir exists" stance.
+ */
+export class SeenHostStore {
+    _seen = new Map();
+    _file = null;
+    _timer = null;
+    _dirty = false;
+    constructor(persistDir) {
+        if (persistDir) {
+            try {
+                if (!existsSync(persistDir))
+                    mkdirSync(persistDir, { recursive: true });
+                this._file = join(persistDir, 'seen-hosts.json');
+                this._load();
+            }
+            catch (_) {
+                // Persistence unavailable (unwritable/foreign dir): degrade to memory-only.
+                this._file = null;
+            }
+        }
+    }
+    has(host) {
+        return this._seen.has(host);
+    }
+    /** Current count for a host (0 when never seen). */
+    count(host) {
+        const r = this._seen.get(host);
+        return r ? r.count : 0;
+    }
+    /** Record one observation of a host, then prune + schedule persistence. */
+    hit(host) {
+        const now = Date.now();
+        const prev = this._seen.get(host);
+        if (prev) {
+            prev.count++;
+            prev.lastSeen = now;
+        }
+        else {
+            this._seen.set(host, { count: 1, lastSeen: now });
+        }
+        this._prune(now);
+        this._schedulePersist();
+    }
+    /** Wipe the frequency map and persist the reset (used by the clear route). */
+    clear() {
+        this._seen.clear();
+        if (this._timer) {
+            clearTimeout(this._timer);
+            this._timer = null;
+        }
+        this._persist();
+    }
+    /** Force an immediate write (shutdown / toggle-off / context dispose). */
+    flush() {
+        if (this._timer) {
+            clearTimeout(this._timer);
+            this._timer = null;
+        }
+        this._persist();
+    }
+    _prune(now = Date.now()) {
+        const cutoff = now - SEEN_RETENTION_MS;
+        for (const [h, r] of this._seen) {
+            if (r.lastSeen < cutoff)
+                this._seen.delete(h);
+        }
+        // Bound the map: evict the least-recently-seen entries until under the cap.
+        while (this._seen.size > SEEN_MAX_ENTRIES) {
+            let oldest = null;
+            let oldestAt = Infinity;
+            for (const [h, r] of this._seen) {
+                if (r.lastSeen < oldestAt) {
+                    oldestAt = r.lastSeen;
+                    oldest = h;
+                }
+            }
+            if (oldest === null)
+                break;
+            this._seen.delete(oldest);
+        }
+    }
+    _schedulePersist() {
+        if (!this._file || this._dirty)
+            return;
+        this._dirty = true;
+        this._timer = setTimeout(() => {
+            this._timer = null;
+            this._persist();
+        }, SEEN_PERSIST_DEBOUNCE_MS);
+    }
+    _persist() {
+        this._dirty = false;
+        if (!this._file)
+            return;
+        try {
+            const payload = {};
+            for (const [h, r] of this._seen)
+                payload[h] = r;
+            writeFileSync(this._file, JSON.stringify(payload));
+        }
+        catch (_) {
+            /* best-effort: a failed write never breaks recording */
+        }
+    }
+    _load() {
+        if (!this._file || !existsSync(this._file))
+            return;
+        try {
+            const raw = JSON.parse(readFileSync(this._file, 'utf8'));
+            for (const [h, v] of Object.entries(raw || {})) {
+                const r = v;
+                if (r && typeof r.count === 'number' && typeof r.lastSeen === 'number') {
+                    this._seen.set(h, { count: r.count, lastSeen: r.lastSeen });
+                }
+            }
+            this._prune();
+        }
+        catch (_) {
+            // Corrupted or foreign-shaped file: ignore and start empty.
+        }
+    }
+}
 /**
  * The in-memory auditor. A ring buffer capped at `cap` entries (oldest dropped
  * on overflow) plus a suspicion scorer. Lost on restart — intentional: network
@@ -171,9 +315,11 @@ export class NetworkMonitor {
     _pluginTrusted = new Set();
     /** Hosts DSH itself is configured to call (provider endpoints); refreshed on settings change. */
     _endpointTrusted = new Set();
-    _seenHosts = new Map();
-    constructor(_cap) {
+    /** Restart-safe seen-host frequency (persisted when a dir is available). */
+    _seenHosts;
+    constructor(_cap, persistDir) {
         this._cap = _cap;
+        this._seenHosts = new SeenHostStore(persistDir);
     }
     setCap(cap) {
         this._cap = Math.max(1, Math.floor(cap) || 1);
@@ -238,13 +384,14 @@ export class NetworkMonitor {
         }
         let risk = 30; // unknown host
         const flags = ['unknown-host'];
-        // +5, not +15: an unseen host is the NORMAL case for every host on its
-        // first call after a restart (the seen-host map is memory-only), so a first
-        // contact must not by itself cross the 40-point warn threshold —
-        // 30 + 5 = 35 stays "normal". The flag is still recorded, and a first
-        // contact that also uploads or is plaintext still alerts (60 / 55).
+        // +15, not +5: with a persistent seen-host store (when a data dir exists) a
+        // genuinely-new host is now the RARE case — a host seen before a restart is
+        // not flagged new anymore — so a first contact is worth a warning by itself
+        // (30 + 15 = 45). Without a data dir the store is still memory-only and this
+        // degrades back toward the old cold-start behaviour; the flag and the alert
+        // margin are the same either way.
         if (isNew) {
-            risk += 5;
+            risk += 15;
             flags.push('new-host');
         }
         if ((method === 'POST' || method === 'PUT' || method === 'PATCH') && reqBytes > 1024) {
@@ -256,7 +403,7 @@ export class NetworkMonitor {
             flags.push('plaintext');
         }
         // Touch-and-go heuristic: repeated calls to the same unknown host raise it.
-        const seen = this._seenHosts.get(host) || 0;
+        const seen = this._seenHosts.count(host);
         if (seen >= 3) {
             risk += 15;
             flags.push('high-frequency');
@@ -297,7 +444,7 @@ export class NetworkMonitor {
         }
         const firstSeen = absolute ? !this._seenHosts.has(host) : false;
         if (absolute)
-            this._seenHosts.set(host, (this._seenHosts.get(host) || 0) + 1);
+            this._seenHosts.hit(host);
         // Use the pre-resolved pluginId when available — the caller captures it
         // synchronously before `await fetch()` so the stack trace is intact.
         // After `await`, the caller's frames are gone and _pluginIdFromStack()
@@ -341,7 +488,11 @@ export class NetworkMonitor {
     clear() {
         this._entries = [];
         this._seq = 0;
-        this._seenHosts = new Map();
+        this._seenHosts.clear();
+    }
+    /** Flush the seen-host store to disk (shutdown / toggle-off / dispose). */
+    flush() {
+        this._seenHosts.flush();
     }
 }
 /** Module-level so the tracer and routes share one instance per process. */
@@ -588,6 +739,13 @@ export function apply(ctx, config) {
     // the setting off at runtime restores the original fetch and stops all
     // recording. When disabled the routes below stay registered but answer
     // empty lists (no monitor instance), so an already-open panel never 500s.
+    //
+    // The seen-host frequency store is persisted under DSH's data dir so cold
+    // starts stop false-alarming and `high-frequency` survives restarts. The
+    // dir resolves from ctx.baseDir when available; otherwise persistence is a
+    // no-op and the store stays memory-only (the plugin's original behaviour).
+    const baseDir = typeof ctx.baseDir === 'string' ? ctx.baseDir : undefined;
+    const persistDir = baseDir ? join(baseDir, 'dsh-flash-net-mon') : undefined;
     const reconfigureAudit = () => {
         if (config.netAuditEnabled.get()) {
             // Enabled: ensure the monitor exists, refresh cap/whitelist, and install
@@ -595,7 +753,7 @@ export function apply(ctx, config) {
             // are kept as guards — the latter also protects against another plugin
             // having wrapped fetch (installRequestTracer checks it again internally).
             if (!_networkMonitor)
-                _networkMonitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP);
+                _networkMonitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP, persistDir);
             _networkMonitor.setCap(config.netLogCap.get());
             _networkMonitor.setUserTrusted(Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get() : []);
             _networkMonitor.setPluginTrusted(Array.isArray(config.netPluginWhitelist.get()) ? config.netPluginWhitelist.get() : []);
@@ -614,8 +772,11 @@ export function apply(ctx, config) {
         else if (_restoreFetch !== null) {
             // Disabled: stop wrapping fetch (restores the original) and release the
             // monitor so no further recording happens. The routes read the nulled
-            // monitor as empty.
+            // monitor as empty. Flush the seen-host store first so the reset (or the
+            // latest frequencies) lands on disk.
             _restoreFetch();
+            if (_networkMonitor)
+                _networkMonitor.flush();
             _networkMonitor = null;
         }
     };
@@ -626,6 +787,8 @@ export function apply(ctx, config) {
         return () => {
             if (restore)
                 restore();
+            if (_networkMonitor)
+                _networkMonitor.flush();
             _networkMonitor = null;
         };
     });
