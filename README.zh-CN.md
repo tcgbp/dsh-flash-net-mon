@@ -2,7 +2,7 @@
 
 > [dsh-flash](https://gitee.com/lenin.guo/dsh-flash) 的**网络监控 / 出站审计**伴生插件 —— 它自己注册告警提供者（alert provider）和自己的面板开关，而不是挤进 dsh-flash 的 `apply()` 里。
 
-版本 0.1.0 · Apache-2.0
+版本 0.3.0 · Apache-2.0
 
 **[English](./README.md)**
 

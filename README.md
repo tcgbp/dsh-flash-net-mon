@@ -4,7 +4,7 @@
 > [dsh-flash](https://gitee.com/lenin.guo/dsh-flash) — it registers its own alert
 > providers and its own panel switch instead of living inside dsh-flash's `apply()`.
 
-Version 0.1.0 · Apache-2.0
+Version 0.3.0 · Apache-2.0
 
 **[中文](./README.zh-CN.md)**
 
