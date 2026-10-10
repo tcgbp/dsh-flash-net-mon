@@ -24,7 +24,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | 设置命名空间 | `dsh-flash-net-mon` |
-| 字段 | `netAuditEnabled`、`netLogCap`、`netSuspectWarn`、`netSuspectErr`、`netWhitelist`、`netPluginWhitelist`、`netSlowThreshold`、`netPollBase`、`netPollMin` |
+| 字段 | `netAuditEnabled`、`netLogCap`、`netLogTtlSec`、`netSuspectWarn`、`netSuspectErr`、`netWhitelist`、`netPluginWhitelist`、`netSlowThreshold`、`netPollBase`、`netPollMin` |
 | 路由 | `/plugins/dsh-flash-net-mon/network-log`、`/network-alerts`、`/network-whitelist`、`/network-plugin-whitelist` |
 
 宿主半**没有**宿主侧服务依赖（`inject: []`）：所有服务都是惰性注入的，设置走 `settings`，路由走 `webServer`。
@@ -63,6 +63,7 @@
 | 轮询基础间隔 `netPollBase` | 10000–120000 ms，步长 5000 | 60000 ms |
 | 轮询最小间隔 `netPollMin` | 5000–30000 ms，步长 1000 | 10000 ms |
 | 日志容量 `netLogCap` | 50–1000 条，步长 50 | 300 |
+| 保留时长 `netLogTtlSec` | 0–120 分钟，步长 5（0 = 永不超时） | 60 分钟 |
 | 可疑阈值 `netSuspectWarn` | 10–90，步长 5 | 40 |
 | 危险阈值 `netSuspectErr` | 20–100，步长 5 | 70 |
 
@@ -204,6 +205,6 @@ Gitee 是权威仓库，也是本地唯一配置的 remote；GitHub（`github.co
 
 - **只记元数据**：方法、主机、路径、字节数、状态、耗时、TLS 与否、风险分、标记、时间，以及重定向后的最终主机（与初始目标不同时）。**从不读取请求/响应体，也从不记录请求头取值。** 响应对象原样返回给调用方。
 - **不消费流**：请求体若是不透明流，当调用方带了显式 `Content-Length` 头时仍会据此报出字节数——所以大体积的流式上传不再对 `large-upload` 隐形；没这个头时字节数记为 0（宁可报 0 也不吞掉流）；没有 `content-length` 时响应大小记为 `-1`；响应从未到达时同样为 `-1`、状态记为 0。
-- **历史只在内存里**：环形缓冲上限 `netLogCap`，超出丢弃最旧的一条；进程重启即丢失。唯一的例外是**主机频次表**（host → 次数 + 最近一次时间）会持久化，让 `new-host` 跨重启保持精确（见上「主机频次持久化」）。任何请求日志条目都绝不落盘。
+- **历史只在内存里**：环形缓冲上限 `netLogCap`，超出丢弃最旧的一条。第二条淘汰轴——`netLogTtlSec`（默认 60 分钟，0 = 关闭）——会剔除早于该窗口的条目，即使缓冲未满，这样长时间运行的会话不会一直囤着陈旧日志；`record`/`snapshot`/`alerts` 下次调用时惰性裁剪前端。始终是会话数据，进程重启即丢失。唯一的例外是**主机频次表**（host → 次数 + 最近一次时间）会持久化，让 `new-host` 跨重启保持精确（见上「主机频次持久化」）。任何请求日志条目都绝不落盘。
 - **全局影响**：追踪器包装的是 `globalThis.fetch`（Node 18+ 的 undici fetch，`ctx.http` 与裸 `fetch()` 共用同一入口，所以一个包装即可覆盖两者）。关闭开关即还原；`__dockFlashTraced` 标记防止热重载/重复 `apply()` 造成的双重包装。
 - **界面语言**：面板与告警文案自带中英文，跟随 DSH 的语言设置。

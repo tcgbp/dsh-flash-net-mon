@@ -14,6 +14,10 @@ const DEFAULT_NET_LOG_CAP = 300;
 const DEFAULT_NET_SUSPECT_WARN = 40;
 const DEFAULT_NET_SUSPECT_ERR = 70;
 const DEFAULT_NET_AUDIT_ENABLED = false;
+/** #6: expire audited entries older than this (in seconds) when they would not
+ *  otherwise be shed by the ring buffer. 0 disables time-based eviction, so a
+ *  session only ever drops by count (the historical behaviour). */
+const DEFAULT_NET_LOG_TTL_SEC = 3600;
 export const Config = Schema.object({
     netAuditEnabled: Schema.boolean().default(DEFAULT_NET_AUDIT_ENABLED).volatile(),
     netLogCap: Schema.number().default(DEFAULT_NET_LOG_CAP).volatile(),
@@ -24,6 +28,7 @@ export const Config = Schema.object({
     netSlowThreshold: Schema.number().default(DEFAULT_NET_SLOW_THRESHOLD).volatile(),
     netPollBase: Schema.number().default(DEFAULT_NET_POLL_BASE).volatile(),
     netPollMin: Schema.number().default(DEFAULT_NET_POLL_MIN).volatile(),
+    netLogTtlSec: Schema.number().default(DEFAULT_NET_LOG_TTL_SEC).volatile(),
 });
 // ── Private types & helpers ──────────────────────────────────────────────
 /**
@@ -317,6 +322,8 @@ export class NetworkMonitor {
     _endpointTrusted = new Set();
     /** Restart-safe seen-host frequency (persisted when a dir is available). */
     _seenHosts;
+    /** #6: time-based eviction window in ms; 0 disables it (count-only buffer). */
+    _ttlMs = 0;
     constructor(_cap, persistDir) {
         this._cap = _cap;
         this._seenHosts = new SeenHostStore(persistDir);
@@ -325,6 +332,12 @@ export class NetworkMonitor {
         this._cap = Math.max(1, Math.floor(cap) || 1);
         while (this._entries.length > this._cap)
             this._entries.shift();
+    }
+    /** Configure time-based retention. `ttlSec` of 0 turns it off (count-only). */
+    setTtl(ttlSec) {
+        const s = Number(ttlSec);
+        this._ttlMs = isFinite(s) && s > 0 ? s * 1000 : 0;
+        this._evictStale();
     }
     setUserTrusted(hosts) {
         this._userTrusted = new Set((hosts || []).map((h) => String(h).toLowerCase()));
@@ -410,7 +423,25 @@ export class NetworkMonitor {
         }
         return { risk: Math.min(100, risk), flags };
     }
+    /** #6: drop entries older than the TTL window. No-op when TTL is disabled, so
+     *  the historical count-only ring-buffer behaviour is preserved. Run lazily on
+     *  the code paths that observe the buffer (record, snapshot, alerts). */
+    _evictStale(now = Date.now()) {
+        if (this._ttlMs <= 0 || this._entries.length === 0)
+            return;
+        const cutoff = now - this._ttlMs;
+        if (this._entries[this._entries.length - 1].timestamp >= cutoff)
+            return;
+        // Entries are pushed chronologically, so once we find one at/after the
+        // cutoff all earlier ones are stale too — walk from the (oldest) front.
+        let i = 0;
+        while (i < this._entries.length && this._entries[i].timestamp < cutoff)
+            i++;
+        if (i > 0)
+            this._entries.splice(0, i);
+    }
     record(input, preResolvedPluginId) {
+        this._evictStale();
         let host = '?';
         let pathname = '';
         // The host the response *actually* arrived from (undici exposes the final
@@ -474,9 +505,11 @@ export class NetworkMonitor {
         return entry;
     }
     snapshot() {
+        this._evictStale();
         return this._entries.slice();
     }
     alerts(threshold) {
+        this._evictStale();
         return this._entries.filter((e) => e.risk >= threshold);
     }
     /**
@@ -766,6 +799,7 @@ export function apply(ctx, config) {
             if (!_networkMonitor)
                 _networkMonitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP, persistDir);
             _networkMonitor.setCap(config.netLogCap.get());
+            _networkMonitor.setTtl(config.netLogTtlSec.get());
             _networkMonitor.setUserTrusted(Array.isArray(config.netWhitelist.get()) ? config.netWhitelist.get() : []);
             _networkMonitor.setPluginTrusted(Array.isArray(config.netPluginWhitelist.get()) ? config.netPluginWhitelist.get() : []);
             // Derive the trusted endpoints again: settings may have become available
@@ -806,7 +840,7 @@ export function apply(ctx, config) {
     // ── C · Network audit — volatile-update subscription ─────────────────
     // Self-contained: listens for changes on its own audit paths only.
     ctx.on('loader/volatile-update', (paths) => {
-        const auditPaths = ['netAuditEnabled', 'netLogCap', 'netSuspectWarn', 'netSuspectErr', 'netWhitelist', 'netPluginWhitelist'];
+        const auditPaths = ['netAuditEnabled', 'netLogCap', 'netLogTtlSec', 'netSuspectWarn', 'netSuspectErr', 'netWhitelist', 'netPluginWhitelist'];
         const relevant = (p) => p.length === 1;
         if (!paths.some((p) => relevant(p) && auditPaths.includes(p[0])))
             return;

@@ -33,7 +33,7 @@ A Cordis plugin named `dsh-flash-net-mon`.
 | Thing | Detail |
 | --- | --- |
 | Settings namespace | `dsh-flash-net-mon` |
-| Fields | `netAuditEnabled`, `netLogCap`, `netSuspectWarn`, `netSuspectErr`, `netWhitelist`, `netPluginWhitelist`, `netSlowThreshold`, `netPollBase`, `netPollMin` |
+| Fields | `netAuditEnabled`, `netLogCap`, `netLogTtlSec`, `netSuspectWarn`, `netSuspectErr`, `netWhitelist`, `netPluginWhitelist`, `netSlowThreshold`, `netPollBase`, `netPollMin` |
 | Routes | `/plugins/dsh-flash-net-mon/network-log`, `/network-alerts`, `/network-whitelist`, `/network-plugin-whitelist` |
 
 The host half has **no host-side service dependency** (`inject: []`): everything is
@@ -91,6 +91,7 @@ The **Configure** button beside the switch opens the network monitor config moda
 | Poll base interval `netPollBase` | 10000–120000 ms, step 5000 | 60000 ms |
 | Poll minimum interval `netPollMin` | 5000–30000 ms, step 1000 | 10000 ms |
 | Log capacity `netLogCap` | 50–1000 entries, step 50 | 300 |
+| Retention `netLogTtlSec` | 0–120 min, step 5 (0 = keep forever) | 60 min |
 | Suspect threshold `netSuspectWarn` | 10–90, step 5 | 40 |
 | Danger threshold `netSuspectErr` | 20–100, step 5 | 70 |
 
@@ -344,8 +345,11 @@ tarball the dsh-market entry points at.
   is no longer invisible to `large-upload`. Without that header it counts as 0 bytes
   (better to report 0 than to swallow the stream); a response with no `content-length`
   counts as `-1`, and a response that never arrived is `-1` bytes with status `0`.
-- **History is memory-only**: a ring buffer capped by `netLogCap`, oldest dropped first,
-  lost on restart — the audit log is session data, not user data that needs persisting.
+- **History is memory-only**: a ring buffer capped by `netLogCap`, oldest dropped first.
+  A second eviction axis — `netLogTtlSec` (default 60 min, 0 = off) — sheds entries older
+  than the window even when the buffer is not full, so a long-running session does not keep
+  stale logs forever. On `record`/`snapshot`/`alerts` the next call lazily prunes the front;
+  the audit log stays session data, lost on restart — not user data that needs persisting.
   The one exception is the **seen-host frequency** (host → count + last-seen), which is
   persisted so `new-host` stays precise across restarts (see "Seen-host frequency
   persistence" below). No request log entry is ever written to disk.

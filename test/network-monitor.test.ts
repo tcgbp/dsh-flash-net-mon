@@ -274,3 +274,47 @@ test('#4: retention drops hosts not seen within the window', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── #6 time-based retention ──────────────────────────────────────────────
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+test('#6: ring buffer still holds everything when TTL is large', () => {
+  const m = new NetworkMonitor(100)
+  m.setTtl(3600)
+  rec(m)
+  rec(m)
+  rec(m)
+  const snap = m.snapshot()
+  assert.equal(snap.length, 3)
+})
+
+test('#6: entries past the TTL window are evicted from snapshot', async () => {
+  const m = new NetworkMonitor(100)
+  m.setTtl(0.08) // 80 ms — evict anything older
+  rec(m)
+  await sleep(120)
+  rec(m) // fresh relative to now
+  const snap = m.snapshot()
+  // Only the entry recorded after the wait survives.
+  assert.equal(snap.length, 1)
+})
+
+test('#6: TTL 0 disables time-based eviction (count-only behavior)', async () => {
+  const m = new NetworkMonitor(100)
+  m.setTtl(0)
+  rec(m)
+  await sleep(120)
+  rec(m)
+  assert.equal(m.snapshot().length, 2)
+})
+
+test('#6: alerts() also applies the TTL window', async () => {
+  const m = new NetworkMonitor(100)
+  m.setTtl(0.08)
+  rec(m, { method: 'POST', reqBytes: 2048 }) // risk 70, alerts
+  await sleep(120)
+  const fresh = rec(m, { method: 'POST', reqBytes: 2048 }) // risk 70, alerts
+  const al = m.alerts(55)
+  assert.equal(al.length, 1)
+  assert.equal(al[0].seq, fresh.seq)
+})
