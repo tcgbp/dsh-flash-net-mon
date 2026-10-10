@@ -123,7 +123,7 @@ URL 解析不出主机时（相对地址，如 `/x`）不参与评分：记 0 �
 
 用户白名单里的**顶级域名覆盖其子域**（加入 `example.com` 即信任 `api.example.com`），与别处 `NO_PROXY` 的语义一致。
 
-插件归属的解析顺序：`AsyncLocalStorage` 上下文（任意插件经 `withPluginContext` 播种）→ 栈帧里的 `node_modules/<pkg>/` 提示 → `unknown`。**`unknown` 本身就是有意义的告警信号**（「有匿名代码在发数据」），不会被静默丢弃。⚠ 栈帧启发式是脆弱的（在打包器 shim 或运行时包装层之间调用会误判），只作为尽力而为的兜底。
+插件归属的解析顺序：`AsyncLocalStorage` 上下文（任意插件经 `withPluginContext` 播种）→ 栈帧里的 `node_modules/<pkg>/` 提示 → `unknown`。**`unknown` 本身就是有意义的告警信号**（「有匿名代码在发数据」），不会被静默丢弃。⚠ 栈帧启发式是脆弱的（在打包器 shim 或运行时包装层之间调用会误判），只作为尽力而为的兜底。为减少最常见的误判，栈扫描会跳过透明 HTTP/WS 客户端库（`axios`、`got`、`node-fetch`、`ws`、`follow-redirects`、`undici` 等），继续往真正发起请求的插件帧追——所以经由客户端库发出去的流量，归属落在调用者身上，而不是 axios/ws。
 
 想让自己的出站调用被精确归属的 DSH 插件，用 `withPluginContext(pluginId, fn)` 包一层即可：
 

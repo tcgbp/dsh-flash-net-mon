@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -457,4 +457,60 @@ test('#10: mkRuntime() returns a fresh, independent instance every call', () => 
   assert.equal(b.restoreFetch, null)
   assert.equal(b.restoreHttp, null)
   assert.deepEqual(b.endpoints, [])
+})
+
+// ── #2 transparent-network-lib stack attribution ─────────────────────────
+// The stack string is built with the deepest (throw site) frame first, so the
+// caller-most plugin frame appears last — exactly how real V8 stack traces read.
+test('#2: transparent libs are skipped; the real plugin frame wins', () => {
+  const stack = [
+    '    at dispatchReq (/proj/node_modules/undici/lib/dispatcher.js:1:1)',
+    '    at NodeHttp2Client (/proj/node_modules/axios/lib/client.js:1:1)',
+    '    at spawn (/proj/node_modules/follow-redirects/index.js:1:1)',
+    '    at myExport (/proj/node_modules/dsh-plugin-scraper/lib/index.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), 'dsh-plugin-scraper')
+})
+
+test('#2: caller frames right after a transparent lib reduce to the plugin', () => {
+  const stack = [
+    '    at wrap (/proj/node_modules/undici/lib/fetch/index.js:1:1)',
+    '    at invoke (/proj/node_modules/ws/lib/websocket.js:1:1)',
+    '    at connect (/proj/node_modules/dsh-plugin-realtime/index.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), 'dsh-plugin-realtime')
+})
+
+test('#2: only transparent libs (no plugin frame) resolve to unknown', () => {
+  const stack = [
+    '    at dispatchReq (/proj/node_modules/undici/lib/dispatcher.js:1:1)',
+    '    at NodeHttp2Client (/proj/node_modules/axios/lib/client.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), null)
+})
+
+test('#2: scoped plugins keep their full @scope/name identity', () => {
+  const stack = [
+    '    at wrap (/proj/node_modules/undici/lib/fetch/index.js:1:1)',
+    '    at handler (/proj/node_modules/@michengai/dsh-archive-manager/lib/index.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), '@michengai/dsh-archive-manager')
+})
+
+test('#2: @types and isolated scope dirs are never treated as callers', () => {
+  const stack = [
+    '    at wrap (/proj/node_modules/undici/lib/fetch/index.js:1:1)',
+    '    at barrel (/proj/node_modules/@types/node/index.d.ts:1:1)',
+    '    at action (/proj/node_modules/dsh-plugin-jobs/index.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), 'dsh-plugin-jobs')
+})
+
+test('#2: case of a transparent lib vs plugin is normalized for matching', () => {
+  // AXios uppercase on disk is still recognised as the transparent lib.
+  const stack = [
+    '    at dispatch (/proj/node_modules/AXIOS/lib/client.js:1:1)',
+    '    at run (/proj/node_modules/dsh-plugin-x/lib/index.js:1:1)',
+  ].join('\n')
+  assert.equal(_pluginIdFromStackText(stack), 'dsh-plugin-x')
 })

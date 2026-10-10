@@ -80,15 +80,38 @@ export function resolvePluginId() {
     const hint = _pluginIdFromStack();
     return hint || _UNKNOWN_PLUGIN;
 }
-/** Extract `<pkg>` from the first `node_modules/<pkg>/` stack frame, if any. */
-function _pluginIdFromStack() {
-    let stack;
-    try {
-        stack = new Error().stack || '';
-    }
-    catch (_) {
+/** Package ids that are never the caller — HTTP clients and related glue that
+ * sit transparently between a plugin and the final fetch/http.request. When
+ * one of these appears, we treat it as a shim and keep walking toward the real
+ * caller (the last non-transparent, non-shim package wins, i.e. the caller-most
+ * frame that is actually a plugin). Widen with care: a name here is excluded
+ * from attribution even if it happens to be a top-level plugin, so only add
+ * packages that are dependably libraries, never plugins. */
+const _TRANSPARENT_NET_LIBS = new Set([
+    'undici',
+    'follow-redirects',
+    'axios',
+    'got',
+    'ky',
+    'node-fetch',
+    'cross-fetch',
+    'isomorphic-fetch',
+    'superagent',
+    'request',
+    'ws',
+    'socket.io-client',
+    'http-proxy-agent',
+    'https-proxy-agent',
+    'proxy-agent',
+    'agent-base',
+    'via-proxy',
+    'socks-proxy-agent',
+    'http-cookie-agent',
+]);
+/** Extract `<pkg>` from the caller-most real-package frame of a stack trace. */
+export function _pluginIdFromStackText(stack) {
+    if (!stack)
         return null;
-    }
     // Capture the full package path segment after `node_modules/`, handling
     // scoped packages: a plain package is `foo`, a scoped one is `@scope/name`
     // (its on-disk layout is `node_modules/@scope/name/...`). Group 1 therefore
@@ -97,23 +120,47 @@ function _pluginIdFromStack() {
     // just the scope (`@michengai`) instead of the real bundle.
     const re = /node_modules[\\/]+((?:@[^\\/]+[\\/]+)?[^\\/]+)/g;
     let m;
-    // Walk every frame, preferring the outermost (caller-most) plugin path, i.e.
-    // the last match that is a real package rather than a loader shim.
+    // Walk every frame, preferring the outermost (caller-most) package, i.e. the
+    // last match that is a real plugin rather than a loader shim or a transparent
+    // network library.
     let candidate = null;
     while ((m = re.exec(stack)) !== null) {
-        const pkg = m[1];
+        const pkg = m[1].toLowerCase();
         // Skip the common well-known loader/runtime names that sit between the real
         // caller and us, so we attribute to the plugin that actually issued the call.
-        if (/^(@deepseek-ai|cordis|undici|node:|internal)/i.test(pkg))
+        if (/^(@deepseek-ai|cordis|node:|internal)/i.test(pkg))
             continue;
-        // Also skip an isolated scope dir (e.g. `node_modules/@scope/` with no
-        // package under it, which can appear in some install layouts) — there is
-        // no real package to attribute the request to yet.
+        // Skip an isolated scope dir (e.g. `node_modules/@scope/` with no package
+        // under it) and type-only deps — neither is a real call site.
         if (/^@[^\\/]+[\\/]?$/.test(pkg))
+            continue;
+        if (/^@types\//.test(pkg))
+            continue;
+        // Skip transparent HTTP/WS client glue (#2-scope): these are the libraries
+        // that usually sit at the top of the stack when a plugin talks to a host
+        // through a client rather than a bare fetch — attributing to them would
+        // point the finger at axios/ws instead of the plugin that called them.
+        if (_TRANSPARENT_NET_LIBS.has(pkg))
             continue;
         candidate = pkg;
     }
     return candidate;
+}
+/**
+ * Best-effort stack fallback: resolve the caller plugin id from the live stack
+ * trace. Called only when no AsyncLocalStorage context was seeded (opt-in
+ * plugins via `withPluginContext`); kept intentionally fragile, see
+ * `_pluginIdFromStackText` for the heuristic and its limits.
+ */
+function _pluginIdFromStack() {
+    let stack;
+    try {
+        stack = new Error().stack || '';
+    }
+    catch (_) {
+        return null;
+    }
+    return _pluginIdFromStackText(stack);
 }
 /** Built-in hosts considered trustworthy — anything else starts suspect. */
 const BUILTIN_TRUSTED_HOSTS = new Set([

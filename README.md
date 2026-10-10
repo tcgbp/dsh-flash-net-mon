@@ -241,7 +241,11 @@ Plugin attribution resolves in this order: `AsyncLocalStorage` context (seeded b
 plugin) → a `node_modules/<pkg>/` hint in the stack frames → `unknown`. **`unknown` is
 itself a meaningful alert signal** ("anonymous code is sending data") and is never
 silently dropped. ⚠ The stack-frame heuristic is fragile (it misattributes when the call
-passes through a bundler shim or a runtime wrapper); treat it as best effort.
+passes through a bundler shim or a runtime wrapper); treat it as best effort. To reduce
+the most common misattribution, the stack walk skips transparent HTTP/WS client
+libraries (`axios`, `got`, `node-fetch`, `ws`, `follow-redirects`, `undici`, …) and
+keeps walking toward the plugin that actually initiated the call, so traffic funneled
+through a client points at the caller rather than at axios/ws.
 
 A DSH plugin that wants its own outbound calls attributed precisely wraps them in
 `withPluginContext(pluginId, fn)`:
