@@ -240,11 +240,20 @@ curl -sS https://registry.npmjs.org/dsh-flash-net-mon | grep -o '"latest":"[^"]*
 up. Measured on 2026-10-08 with `0.2.0`: publish → `202` (`shasum d3eb57bc…`), immediate
 re-publish → `409`, `GET /-/stage` → `{"items":[],"page":0,"perPage":10,"total":0}`, version
 endpoint `404` → `200` about a minute later, `dist-tags` → `latest: 0.2.0`
-(`integrity sha512-cGuyrhgR…`). The published tarball's seven files were then compared
-byte-for-byte against the working tree — identical. **Its own sha256 does not match
+(`integrity sha512-cGuyrhgR…`). Reproduced on 2026-10-11 with `0.3.1`: `202`
+(`shasum 4947c701…`), version endpoint `404` → `200` about a minute later, `dist-tags` →
+`latest: 0.3.1`. The published tarball's seven files were then compared
+byte-for-byte against the working tree — identical — with `package.json` the one exception,
+which npm rewrites itself. **Its own sha256 does not match
 `pnpm pack`'s** (npm repacks the files itself), so `dist.shasum`/`dist.integrity` describe
 npm's tarball while the GitHub Release asset is `pnpm`'s: compare *contents* across the two
 channels, never the tarball hash.
+
+The two channels can also **diverge in version**: `0.3.0` was released to Gitee and GitHub and
+never published to the registry, so npm's `latest` kept serving the working `0.2.0` while the
+mirror served a version that could not activate. Check what npm actually has
+(`npm view dsh-flash-net-mon versions`) before writing anything that claims what installers
+were running.
 
 A consumer installing the fresh version through a profile's pnpm workspace can also hit the
 supply-chain age policy (`minimumReleaseAge`). The plugin manager records the exception itself
@@ -285,22 +294,21 @@ is required and must be a single line; and `tarball` must be `https` on GitHub r
 hosting and end in `.tgz`/`.tar.gz`. A description containing `: ` **must be quoted**, or
 YAML parses it as a nested mapping key.
 
-**Prerequisites** (state checked 2026-10-04):
+**Prerequisites** (state checked 2026-10-11):
 
 | Requirement | State |
 |---|---|
 | `github.com/tcgbp/dsh-flash-net-mon` exists — public, default branch `master` | ✅ created 2026-10-04T02:27Z |
 | The mirror has run: GitHub's tree equals Gitee's | ✅ verified by tree hash |
 | Repository carries the `dsh-plugin` topic | ✅ |
-| A Release serves `dsh-flash-net-mon.tgz` | ✅ `v0.2.0`, published 2026-10-08 — the version-free `releases/latest/download/` URL serves it; fetched back and byte-identical |
-| Repository is at least 1 day old | ⏳ true from 2026-10-05; the gate re-runs itself every 6 hours |
+| A Release serves `dsh-flash-net-mon.tgz` | ✅ `v0.3.1`, published 2026-10-11 — the version-free `releases/latest/download/` URL serves it (302 to that tag's asset); fetched back by asset id and byte-identical |
+| Repository is at least 1 day old | ✅ cleared 2026-10-05; the gate re-runs itself every 6 hours |
 | `dsh.bundle` manifest + `cordis.patch.yml` | ✅ both present |
 | Real working code; `@deepseek-ai/*` as peer dependencies | ✅ |
 
 The entry is ready to submit: the `tarball` URL it carries was fetched for real and returns
-HTTP 200 with the expected bytes. The only open item is the age gate, which clears itself on
-2026-10-05 without anyone pushing anything — a PR opened before then simply goes green on its
-own.
+HTTP 200 with the expected bytes. It follows `releases/latest`, so the asset name must never
+gain a version — a rename would 404 the marketplace silently.
 
 **Publishing to npm is optional** and only changes the install experience (a prebuilt
 install skips the build-approval step). The registry maps the npm package back to the listed

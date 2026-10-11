@@ -32,6 +32,11 @@ production message verbatim, and the same test replays both deferred consumers t
 that the four HTTP routes still register. The persistence sections of both READMEs
 documented the old `baseDir` behaviour and now document the environment-based resolution.
 
+**What each channel was serving.** `0.3.0` was released to Gitee and GitHub but never
+published to npm, so the registry's `latest` stayed on the working `0.2.0` the whole time;
+the failure appeared on Gitee/GitHub installs and on a checkout linked into a profile, which
+is where it was reported. `0.3.1` is the first version carrying the fix on both channels.
+
 ## 0.3.0
 
 Everything since `v0.2.0`. It is a minor bump because the host gained a settings
