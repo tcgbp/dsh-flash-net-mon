@@ -11,6 +11,27 @@ grades each outbound request normal / suspect / dangerous and offers filtering
 and whitelists. Auditing is off by default; once you turn it on it persists across
 restarts (see the 0.3.0 note on the single-authority setting).
 
+## 0.3.1
+
+**Fixed: 0.3.0 could not activate at all.** The persist directory for the seen-host
+frequency table was read as `(ctx as any).baseDir`. A cordis context is a proxy that does
+**not** answer `undefined` for undeclared properties — it throws `cannot get property
+"baseDir" without inject` — so the read threw out of `apply()` and the whole entry failed
+to load: DSH reported `1 entry did not activate`, and with it went the audit tracer, the
+connectivity heartbeat and all four routes. The path is now computed from the environment
+by `resolveAuditDataDir()`: `$DSH_HOME` when set (a blank value counts as unset),
+otherwise `~/.dsh`, plus `storages/dsh-flash-net-mon/seen-hosts.json` — the same
+convention `dsh-cost-meter` follows. It is deliberately **not** imported from
+`@deepseek-ai/dsh-home-paths`: that package lives in the harness's own dependency tree,
+and a static import that cannot resolve fails before any fallback can run, which is the
+same "activation dies over a path" failure this release fixes.
+
+The unit suite now activates `apply()` against a context that throws on undeclared
+property reads, exactly as cordis does. Reverting the fix makes that test fail with the
+production message verbatim, and the same test replays both deferred consumers to assert
+that the four HTTP routes still register. The persistence sections of both READMEs
+documented the old `baseDir` behaviour and now document the environment-based resolution.
+
 ## 0.3.0
 
 Everything since `v0.2.0`. It is a minor bump because the host gained a settings
