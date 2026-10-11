@@ -2,7 +2,8 @@ import nodeHttp from 'node:http';
 import nodeHttps from 'node:https';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 // Default export only (`export default Schema`); there is no named `Schema`.
 import Schema from '@deepseek-ai/schemastery';
 export const name = 'dsh-flash-net-mon';
@@ -300,6 +301,43 @@ const SEEN_RETENTION_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SEEN_MAX_ENTRIES = 500;
 /** Debounce for mirroring the frequency map to disk (ms). */
 const SEEN_PERSIST_DEBOUNCE_MS = 2500;
+/**
+ * Directory the audit persists its seen-host frequency store into:
+ * `<dsh home>/storages/dsh-flash-net-mon`, following the same convention
+ * dsh-cost-meter uses (`join(resolveDshHome(), 'storages', 'cost-meter')`).
+ *
+ * The harness home is `$DSH_HOME` when it is set to something non-blank,
+ * otherwise `<user home>/.dsh`. That precedence is deliberately re-implemented
+ * here instead of imported from `@deepseek-ai/dsh-home-paths`: the helper lives
+ * in the harness's own dependency tree, and a static import of a package that
+ * is absent on some host fails at module-resolution time — before any fallback
+ * could run — turning "no persistence" into "the whole entry does not activate".
+ * `env` is injectable so the resolution can be tested without touching the
+ * process environment.
+ *
+ * Returns undefined when no home can be determined; callers then keep the store
+ * memory-only rather than guessing a path.
+ */
+export function resolveAuditDataDir(env = process.env) {
+    try {
+        const userHome = env.USERPROFILE || env.HOME || homedir() || '';
+        const configured = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : '';
+        const raw = configured || (userHome ? join(userHome, '.dsh') : '');
+        if (!raw)
+            return undefined;
+        // A leading `~` means the user home, as dsh-home-paths.expandHomePath does.
+        const home = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
+            ? join(userHome, raw.slice(1).replace(/^[\\/]+/, ''))
+            : raw;
+        if (!home)
+            return undefined;
+        return join(resolve(home), 'storages', 'dsh-flash-net-mon');
+    }
+    catch (_) {
+        // A hostile/unavailable environment must never fail activation.
+        return undefined;
+    }
+}
 /**
  * Durable, restart-safe seen-host frequency.
  *
@@ -1008,11 +1046,14 @@ export function apply(ctx, config) {
     // empty lists (no monitor instance), so an already-open panel never 500s.
     //
     // The seen-host frequency store is persisted under DSH's data dir so cold
-    // starts stop false-alarming and `high-frequency` survives restarts. The
-    // dir resolves from ctx.baseDir when available; otherwise persistence is a
-    // no-op and the store stays memory-only (the plugin's original behaviour).
-    const baseDir = typeof ctx.baseDir === 'string' ? ctx.baseDir : undefined;
-    const persistDir = baseDir ? join(baseDir, 'dsh-flash-net-mon') : undefined;
+    // starts stop false-alarming and `high-frequency` survives restarts:
+    //   <dsh home>/storages/dsh-flash-net-mon/seen-hosts.json
+    // The path is computed from the environment (resolveAuditDataDir), NOT read
+    // off `ctx`: an undeclared context property does not evaluate to undefined,
+    // cordis's proxy throws `cannot get property "X" without inject`, and that
+    // throw escapes apply() and fails the whole entry's activation. When no home
+    // can be resolved the store stays memory-only (the original behaviour).
+    const persistDir = resolveAuditDataDir();
     // #10: every apply() owns its own audit state (monitor + restorers + trusted
     // endpoints). Nothing lives at module scope, so a second instance or a
     // remount can never stomp the first's tracer or persist state.

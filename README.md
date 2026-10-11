@@ -187,9 +187,11 @@ whitelist entry could ever match it.
 
 The `host → {count, lastSeen}` table that drives both `new-host` and `high-frequency`
 is the **only** thing written to disk. It lives at
-`<DSH data dir>/dsh-flash-net-mon/seen-hosts.json`, where the data dir is DSH's
-`baseDir`. When DSH does not expose a `baseDir` (or the directory is unwritable) the
-plugin degrades gracefully to memory-only — the original behaviour.
+`<DSH home>/storages/dsh-flash-net-mon/seen-hosts.json`, where `<DSH home>` is
+`$DSH_HOME` when set (a blank value counts as unset), otherwise `~/.dsh` — the same
+convention `dsh-cost-meter` follows. The path is derived from the environment only,
+never from the cordis context. When no home can be resolved (or the directory is
+unwritable) the plugin degrades gracefully to memory-only — the original behaviour.
 
 Concretely:
 

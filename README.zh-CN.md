@@ -107,7 +107,7 @@ URL 解析不出主机时（相对地址，如 `/x`）不参与评分：记 0 �
 
 ## 主机频次持久化
 
-驱动 `new-host` 与 `high-frequency` 的 `host → {次数, 最近一次时间}` 表，是**唯一**落盘的数据。文件在 `<DSH 数据目录>/dsh-flash-net-mon/seen-hosts.json`，其中数据目录就是 DSH 的 `baseDir`。当 DSH 拿不到 `baseDir`（或目录不可写）时，插件优雅退化为纯内存 —— 即原来的行为。
+驱动 `new-host` 与 `high-frequency` 的 `host → {次数, 最近一次时间}` 表，是**唯一**落盘的数据。文件在 `<DSH 主目录>/storages/dsh-flash-net-mon/seen-hosts.json`，其中主目录取 `$DSH_HOME`（空字符串视为未设置），未设置时用 `~/.dsh` —— 与 `dsh-cost-meter` 相同的约定。路径只由环境变量推导，**不**从 cordis 上下文读取（上下文里没有 `baseDir` 这类属性，读它会直接抛错、导致整个插件激活失败）。当拿不到主目录（或目录不可写）时，插件优雅退化为纯内存 —— 即原来的行为。
 
 具体来说：
 

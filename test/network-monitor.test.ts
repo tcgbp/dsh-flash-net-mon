@@ -11,8 +11,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText } from '../dist/index.js'
+import { join, resolve } from 'node:path'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText, apply, resolveAuditDataDir } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -513,4 +513,128 @@ test('#2: case of a transparent lib vs plugin is normalized for matching', () =>
     '    at run (/proj/node_modules/dsh-plugin-x/lib/index.js:1:1)',
   ].join('\n')
   assert.equal(_pluginIdFromStackText(stack), 'dsh-plugin-x')
+})
+
+// ── #11 data-dir resolution + activation under cordis's property guard ───
+// The regression this guards: apply() read `(ctx as any).baseDir` to place the
+// seen-host store. A cordis context is a Proxy that does NOT answer undefined
+// for undeclared properties — it throws `cannot get property "X" without
+// inject` (cordis src/reflect.ts:136-169) — so the throw escaped apply() and
+// the whole entry failed to activate ("1 entry did not activate"). A plain
+// object as the test context hid that, because reading a missing key on a plain
+// object merely yields undefined.
+
+function volatileRef(value: any) {
+  return { get: () => value }
+}
+
+/** Minimal stand-in for the schema-resolved volatile config. */
+function makeConfig(over: Record<string, any> = {}) {
+  const values: Record<string, any> = {
+    netAuditEnabled: false,
+    netLogCap: 300,
+    netSuspectWarn: 40,
+    netSuspectErr: 70,
+    netWhitelist: [],
+    netPluginWhitelist: [],
+    netSlowThreshold: 5000,
+    netPollBase: 60000,
+    netPollMin: 10000,
+    netLogTtlSec: 3600,
+    ...over,
+  }
+  const config: Record<string, any> = {}
+  for (const key of Object.keys(values)) config[key] = volatileRef(values[key])
+  return config
+}
+
+/**
+ * A context that behaves like cordis: only properties that genuinely exist on
+ * the context resolve, every other read throws. `inject` is deferred, exactly
+ * like the real one (`ctx.inject` → `ctx.plugin` → `new Fiber`), so the test
+ * replays the consumer callbacks after apply() has returned — which is also
+ * when the real runtime starts them.
+ */
+function makeGuardedCtx() {
+  const deferred: Array<{ names: string[]; cb: (c: any) => any }> = []
+  const target = {
+    fiber: {},
+    inject: (names: string[], cb: (c: any) => any) => { deferred.push({ names, cb }) },
+    get: () => undefined,
+    on: () => () => {},
+    effect: (fn: any) => {
+      const cleanup = fn?.()
+      return () => { if (typeof cleanup === 'function') cleanup() }
+    },
+    reflect: { props: {} },
+  }
+  const ctx = new Proxy(target, {
+    get(t, prop, receiver) {
+      if (typeof prop === 'symbol' || Reflect.has(t, prop)) return Reflect.get(t, prop, receiver)
+      throw new Error(`cannot get property "${String(prop)}" without inject`)
+    },
+  })
+  return { ctx, deferred }
+}
+
+test('#11: the audit data dir prefers $DSH_HOME, otherwise <user home>/.dsh', () => {
+  assert.equal(
+    resolveAuditDataDir({ DSH_HOME: 'D:/dsh-home', USERPROFILE: 'C:/Users/someone' }),
+    resolve('D:/dsh-home/storages/dsh-flash-net-mon'),
+  )
+  // A blank $DSH_HOME counts as unset — never as the current directory.
+  assert.equal(
+    resolveAuditDataDir({ DSH_HOME: '   ', USERPROFILE: 'C:/Users/someone' }),
+    resolve('C:/Users/someone/.dsh/storages/dsh-flash-net-mon'),
+  )
+  // HOME is the fallback on platforms without USERPROFILE.
+  assert.equal(
+    resolveAuditDataDir({ HOME: 'C:/home/other' }),
+    resolve('C:/home/other/.dsh/storages/dsh-flash-net-mon'),
+  )
+  // A leading `~` means the user home, as dsh-home-paths.expandHomePath does.
+  assert.equal(
+    resolveAuditDataDir({ DSH_HOME: '~/portable', USERPROFILE: 'C:/Users/someone' }),
+    resolve('C:/Users/someone/portable/storages/dsh-flash-net-mon'),
+  )
+  // Even with nothing configured it resolves from os.homedir() and never throws.
+  const fallback = resolveAuditDataDir({})
+  assert.equal(typeof fallback, 'string')
+  assert.ok(String(fallback).endsWith(join('storages', 'dsh-flash-net-mon')))
+})
+
+test('#11: apply() activates against a context that throws on undeclared reads', () => {
+  const { ctx, deferred } = makeGuardedCtx()
+  assert.doesNotThrow(() => apply(ctx as any, makeConfig() as any))
+
+  // Replay the settings consumer: this is the path that also reads ctx.fiber
+  // (a real context property — cordis context.ts:77 assigns it).
+  const settings = deferred.find((d) => d.names.includes('settings'))
+  assert.ok(settings, 'the settings namespace must be registered')
+  assert.doesNotThrow(() => settings!.cb({
+    settings: { configure: () => {}, describe: () => [] },
+    effect: (fn: any) => {
+      const cleanup = fn?.()
+      return () => { if (typeof cleanup === 'function') cleanup() }
+    },
+    on: () => () => {},
+  }))
+
+  // And the webServer consumer: the four documented routes must all register.
+  const routes: Array<{ path: string }> = []
+  const web = deferred.find((d) => d.names.includes('webServer'))
+  assert.ok(web, 'the HTTP routes must be registered')
+  assert.doesNotThrow(() => web!.cb({
+    webServer: { register: (route: { path: string }) => { routes.push(route); return () => {} } },
+    effect: (fn: any) => {
+      const cleanup = fn?.()
+      return () => { if (typeof cleanup === 'function') cleanup() }
+    },
+  }))
+  assert.deepEqual(routes.map((r) => r.path).sort(), [
+    '/plugins/dsh-flash-net-mon/network-alerts',
+    '/plugins/dsh-flash-net-mon/network-log',
+    '/plugins/dsh-flash-net-mon/network-plugin-whitelist',
+    '/plugins/dsh-flash-net-mon/network-whitelist',
+  ])
 })
