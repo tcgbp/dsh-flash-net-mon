@@ -15,8 +15,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write  # 必需，用于生成 OIDC 令牌
+      workflows: write  # 显式请求工作流写入权限
 
     steps:
       - name: Checkout code
