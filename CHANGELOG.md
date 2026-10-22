@@ -11,6 +11,17 @@ grades each outbound request normal / suspect / dangerous and offers filtering
 and whitelists. Auditing is off by default; once you turn it on it persists across
 restarts (see the 0.3.0 note on the single-authority setting).
 
+## 0.3.2
+
+**Fixed: the connectivity heartbeat polled the wrong health route.** The network-alert
+provider's `HEARTBEAT_URL` pointed at `/plugins/dock-flash/health` — a route that belongs to
+the *other* plugin and exists only if dock-flash happens to be installed. The provider was
+therefore measuring, and alerting on, dock-flash's health rather than the plugin's own host.
+It now polls `/plugins/dsh-flash/health`, the health route of the core this plugin sits on.
+This is a browser-half (`lib/client.js`) change; the host half and its compiled `dist/` are
+untouched, as is the persistence/activation path fixed in 0.3.1. Docs and READMEs updated to
+match the corrected route (see commit `e7a29ec`).
+
 ## 0.3.1
 
 **Fixed: 0.3.0 could not activate at all.** The persist directory for the seen-host
