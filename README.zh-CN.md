@@ -10,7 +10,7 @@
 
 两块能力，分别属于宿主（Host）和浏览器（Browser）：
 
-1. **网络监控（连通性心跳）** —— 定时探测 `/plugins/dock-flash/health`，把「慢」和「超时」变成 dsh-flash 的告警。
+1. **网络监控（连通性心跳）** —— 定时探测 `/plugins/dsh-flash/health`，把「慢」和「超时」变成 dsh-flash 的告警。
 2. **出站审计（fetch 追踪）** —— 可选地包装全局 `fetch`，记录**元数据级**的出站请求清单，按风险分给出「正常 / 可疑 / 危险」分级，并提供筛选、白名单与风险评分说明。
 
 审计是**默认关闭**的（`netAuditEnabled: false`）。该字段只在 Cordis 意义上 `volatile()`（可运行时免重挂载地编辑）；一旦你把开关打开，这个值就会通过 DSH 的 settings 命名空间持久化并跨重启存活，与主机白名单完全一致。
@@ -150,11 +150,11 @@ withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都
 - 请求体上限 4096 字节，超限/空/无法解析一律按「未提供覆盖」处理；
 - 白名单路由是给**够不到设置服务的工具**准备的便利入口，客户端本身走 `ctx.remote.settings`；
 - 审计关闭时这些路由**仍然注册**，只是返回空列表（此时不存在监视器实例），所以已经打开的面板不会 500；
-- 心跳提供者轮询的 `/plugins/dock-flash/health` **属于 dsh-flash**，不在这里（K6）。
+- 心跳提供者轮询的 `/plugins/dsh-flash/health` **属于 dsh-flash**，不在这里（K6）。
 
 ## 心跳告警（网络监控）
 
-- 目标 `/plugins/dock-flash/health`，10 秒 `AbortController` 超时；
+- 目标 `/plugins/dsh-flash/health`，10 秒 `AbortController` 超时；
 - 延迟 > 9 秒 → 🔴「网络连接超时」；延迟 > `netSlowThreshold` → 🟡「网络延迟较高 (Nms)」；
 - 连续失败 ≥ 3 次 → 🔴 超时告警；
 - 下次间隔自适应：`max(netPollMin, round(netPollBase * (1 - 延迟/超时) ^ 1.5 + netPollMin))` —— 越接近超时，下一次探测越早。
