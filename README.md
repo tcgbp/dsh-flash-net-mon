@@ -12,7 +12,7 @@ Version 0.3.1 · Apache-2.0
 
 Two capabilities, one in each half of the plugin:
 
-1. **Network monitor (connectivity heartbeat)** — polls `/plugins/dock-flash/health`
+1. **Network monitor (connectivity heartbeat)** — polls `/plugins/dsh-flash/health`
    on a schedule and turns "slow" and "timed out" into dsh-flash alerts.
 2. **Outbound audit (fetch tracing)** — optionally wraps the global `fetch` and
    records a **metadata-level** list of outbound requests, grades each one
@@ -280,12 +280,12 @@ Behaviour worth knowing:
   service**; the client itself goes through `ctx.remote.settings`.
 - With auditing off these routes **stay registered** and answer empty lists (there is
   no monitor instance), so a panel that is already open never 500s.
-- The `/plugins/dock-flash/health` route the heartbeat polls **belongs to dsh-flash**,
+- The `/plugins/dsh-flash/health` route the heartbeat polls **belongs to dsh-flash**,
   not to this package.
 
 ## Heartbeat alerts (network monitor)
 
-- Target `/plugins/dock-flash/health`, with a 10 s `AbortController` timeout;
+- Target `/plugins/dsh-flash/health`, with a 10 s `AbortController` timeout;
 - latency > 9 s → 🔴 "network timeout"; latency > `netSlowThreshold` → 🟡 "network
   latency high (N ms)";
 - 3 consecutive failures → 🔴 timeout alert;
