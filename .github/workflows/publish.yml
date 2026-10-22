@@ -3,7 +3,7 @@ name: Publish to npm
 on:
   push:
     tags:
-      - 'v*.*.*'  # 仅当推送类似 v1.0.0 的标签时触发
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       tag:
@@ -15,30 +15,39 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write  # 必需，用于生成 OIDC 令牌
+      contents: read
+      id-token: write  # OIDC 发布必需
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }} # 手动触发时使用输入的 tag，自动触发时使用 github.ref
+          ref: ${{ inputs.tag || github.ref }}
 
+      # 1. 先安装 pnpm（必须在 setup-node 之前，否则 cache: 'pnpm' 无法工作）
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9   # 若 package.json 有 packageManager 字段，可删掉这行让它自动读取
+
+      # 2. 设置 Node.js 并启用 pnpm 缓存
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'  # 必须 ≥ 22.14.0
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
 
+      # 3. 用 pnpm 安装依赖（--frozen-lockfile 等价于 npm ci）
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build package (if applicable)
-        run: npm run build --if-present
+        run: pnpm run build --if-present
 
       - name: Run tests
-        run: npm test
+        run: pnpm test
 
+      # 4. 用 pnpm 发布，OIDC 会自动生效
       - name: Publish to npm
-        run: npm publish --access public
-        # 无需设置 NODE_AUTH_TOKEN，npm 会自动使用 OIDC
+        run: pnpm publish --access public --no-git-checks --provenance
