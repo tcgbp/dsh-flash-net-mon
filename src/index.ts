@@ -1191,7 +1191,27 @@ export function apply(ctx: Context, config: NetMonConfig) {
         }
         if (!runtime.monitor) { sendJson(res, 200, { alerts: [] }) ; return }
         const threshold = config.netSuspectWarn.get() ?? DEFAULT_NET_SUSPECT_WARN
-        sendJson(res, 200, { alerts: runtime.monitor.alerts(threshold).reverse() })
+        // Re-apply trust AT SERVE TIME. The scorer zeroes the risk of a trusted
+        // host / plugin only while the request is recorded, so an entry that is
+        // already in the ring buffer keeps its original high risk even after
+        // the user later adds the host to the whitelist. Without this filter the
+        // just-whitelisted host's past alerts would keep being served — and,
+        // because the browser's alert feed is a fetch-on-poll, they re-pop as
+        // genuinely-new after every reload. Trust (exact + apex/subdomain +
+        // builtin + configured endpoints, and the plugin whitelist) must be the
+        // single authority and is therefore applied here on every read.
+        const alerts = runtime.monitor.alerts(threshold).filter((e) => {
+          // A trusted-but-redirected entry is the #1 exfiltration signal and
+          // must KEEP alerting even though its recorded host is the trusted
+          // origin — exactly as the scorer keeps its risk at 60. Only an alert
+          // on a host/plugin that is now trusted for real (and did not redirect
+          // outside) is silenced by a whitelist addition.
+          const redirected = Array.isArray(e.flags) && e.flags.includes('redirected-host')
+          if (redirected) return true
+          const trusted = runtime.monitor!.isTrusted(e.host) || runtime.monitor!.isTrustedPlugin(e.pluginId)
+          return !trusted
+        })
+        sendJson(res, 200, { alerts: alerts.reverse() })
       },
     }), 'dsh-flash-net-mon: GET /plugins/dsh-flash-net-mon/network-alerts')
 
