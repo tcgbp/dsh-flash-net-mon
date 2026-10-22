@@ -11,6 +11,23 @@ grades each outbound request normal / suspect / dangerous and offers filtering
 and whitelists. Auditing is off by default; once you turn it on it persists across
 restarts (see the 0.3.0 note on the single-authority setting).
 
+## 0.3.3
+
+**Fix: whitelist additions now suppress alerts that were already in flight.** The
+`/network-alerts` route used to serve every ring-buffer entry that had been scored high
+*at record time* — even after the user later added that host (or plugin) to the
+whitelist. Because the browser's alert feed de-duplicates by `seq`, which resets on every
+reload, those stale entries were re-raised as brand-new alerts after each page reload, so
+the popup genuinely kept coming back no matter how many times the host was whitelisted.
+
+The server now re-applies trust **at serve time** — exact host, apex/subdomain (`NO_PROXY`
+semantics), built-in trusted hosts, DSH-configured endpoints, and the plugin whitelist —
+so a whitelist addition takes effect immediately and survives reloads. The browser audit
+poll mirrors the same rule. The one deliberate exception is a `redirected-host` entry (a
+trusted origin that bounced the payload to an untrusted host): that is the single strongest
+exfiltration signal and is always kept regardless of whitelist state, matching the scorer,
+which keeps such entries at risk 60 even for a trusted origin.
+
 ## 0.3.2
 
 **Fixed: the connectivity heartbeat polled the wrong health route.** The network-alert
