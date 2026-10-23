@@ -13,11 +13,26 @@ restarts (see the 0.3.0 note on the single-authority setting).
 
 ## 0.3.3
 
-**Release engineering only — no runtime behaviour change.** The publish workflow is
-corrected: `pnpm run --if-present build` (the flag belongs to pnpm, not the run script)
-instead of the mis-ordered `pnpm run build --if-present`, pnpm pinned to `11.5.3`, and
-the npm upgrade step pinned to `npm@11` for trusted publishing — no `registry-url`, so
-OIDC/provenance applies on publish.
+**New: a first-class "session log upload" alert with an in-place disable.**
+When the host half sees an outbound upload to `dsh-otel-collector.deepseeksvc.com/v1/logs`
+(the collector used by the `session-log-deepseek` plugin), it now scores it at risk 80 and
+surfaces it as a dedicated, non-dismissible **otel-logs-upload** alert instead of a generic
+row. That alert carries a plugin-registered action — *Disable session-log-deepseek* — and
+pressing it asks the host to write `config.enabled: false` for the plugin into the profile's
+`cordis.patch.yml` atomically (temp-file + rename, after keeping a timestamped `.bak-*`
+backup). DSH is **not** auto-restarted; the UI says so and leaves the alert up until you
+restart. A matching fallback button also lives in the Network Audit panel.
+
+The alert detail panel in the core `dsh-flash` package now renders arbitrary `actions` that a
+provider attaches to a raised alert (each `{id,label,primary,onClick}` becomes a button; the
+`onClick` may return `{message,level,close}`). That shared change lives in dsh-flash's
+browser bundle, so render this plugin with a matching dsh-flash build. Host routes added:
+`POST /plugins/dsh-flash-net-mon/disable-session-log`.
+
+**Release engineering** (also 0.3.3): the publish workflow is corrected — `pnpm run --if-present build`
+(the flag belongs to pnpm, not the run script) instead of the mis-ordered
+`pnpm run build --if-present`, pnpm pinned to `11.5.3`, and the npm upgrade step pinned to
+`npm@11` for trusted publishing — no `registry-url`, so OIDC/provenance applies on publish.
 
 ## 0.3.2
 

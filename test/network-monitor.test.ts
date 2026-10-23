@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText, apply, resolveAuditDataDir } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText, apply, resolveAuditDataDir, isOtelLogsUpload, _patchDisableText } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -632,9 +632,93 @@ test('#11: apply() activates against a context that throws on undeclared reads',
     },
   }))
   assert.deepEqual(routes.map((r) => r.path).sort(), [
+    '/plugins/dsh-flash-net-mon/disable-session-log',
     '/plugins/dsh-flash-net-mon/network-alerts',
     '/plugins/dsh-flash-net-mon/network-log',
     '/plugins/dsh-flash-net-mon/network-plugin-whitelist',
     '/plugins/dsh-flash-net-mon/network-whitelist',
   ])
+})
+
+// ── session-log OTEL upload flag + patch-editor disable ──────────────────────
+
+test('isOtelLogsUpload matches the collector host + /v1/logs only', () => {
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/v1/logs'), true)
+  // wrong host
+  assert.equal(isOtelLogsUpload('evil.example', '/v1/logs'), false)
+  // wrong path
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/v2/logs'), false)
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/'), false)
+})
+
+test('otel-logs-upload scores a flat 80 regardless of other factors', () => {
+  const m = new NetworkMonitor(100)
+  const e = m.record(
+    { method: 'POST', url: 'https://dsh-otel-collector.deepseeksvc.com/v1/logs', reqBytes: 99, resBytes: 100, status: 200, durationMs: 10, tls: true },
+    'session-log-deepseek',
+  )
+  assert.equal(e.risk, 80)
+  assert.ok(e.flags.includes('otel-logs-upload'))
+})
+
+// The patch editor: appends when the plugin row is absent.
+test('patch editor appends a canonical disable block when the row is absent', () => {
+  const src = '- id: some-other-plugin\n  config:\n    enabled: true\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.needsManual, false)
+  assert.equal(r.changed, true)
+  assert.ok(r.next!.includes('- id: session-log-deepseek'))
+  assert.ok(r.next!.includes('config:'))
+  assert.ok(r.next!.includes('enabled: false'))
+  // Never clobbers pre-existing content.
+  assert.ok(r.next!.includes('some-other-plugin'))
+})
+
+// Already disabled → no content change.
+test('patch editor is a no-op when the target is already disabled', () => {
+  const src = '- id: session-log-deepseek\n  config:\n    enabled: false\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.needsManual, false)
+  assert.equal(r.changed, false)
+  assert.equal(r.next, undefined)
+})
+
+// Disabling edits only the target plugin's own row, preserving other config keys.
+test('patch editor preserves sibling config keys while setting enabled:false', () => {
+  const src = '- id: a\n  config:\n    foo: 1\n- id: session-log-deepseek\n  config:\n    foo: 2\n    bar: 3\n- id: b\n  config:\n    foo: 4\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('foo: 2'))
+  assert.ok(r.next!.includes('bar: 3'))
+  assert.ok(r.next!.includes('foo: 4'))
+  assert.ok(r.next!.includes('foo: 1'))
+})
+
+// Inline/flow config we cannot safely merge → flagged manual, nothing written.
+test('patch editor flags manual when config uses an inline/flow form', () => {
+  const src = '- id: session-log-deepseek\n  config: { foo: 1 }\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.needsManual, true)
+  assert.equal(r.changed, false)
+  assert.equal(r.next, undefined)
+})
+
+// A previously blank config under the row still gains enabled:false safely.
+test('patch editor inserts config block when the row has no config key', () => {
+  const src = '- id: session-log-deepseek\n  version: 1\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('version: 1'))
+})
+
+// Id matching is case-insensitive but scoped to the target plugin id.
+test('patch editor matches the plugin id case-insensitively', () => {
+  const src = '- id: Session-Log-DeepSeek\n  config:\n    foo: 1\n'
+  const r = _patchDisableText(src, 'session-log-deepseek')
+  assert.equal(r.changed, true)
+  assert.ok(r.next!.includes('enabled: false'))
 })

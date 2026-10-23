@@ -158,6 +158,7 @@ Every outbound request scores 0–100:
 | Plaintext: not `https:` (`plaintext`) | +20 |
 | High frequency: the same unknown host seen ≥ 3 times (`high-frequency`) | +15 |
 | Redirected to a different, untrusted host (`redirected-host`) | 60 flat |
+| Upload to the session-log OTEL collector `dsh-otel-collector.deepseeksvc.com/v1/logs` (`otel-logs-upload`) | 80 flat |
 | Ceiling | 100 |
 
 `redirected-host` is a **flat 60**, not an additive +. It fires when the initial
@@ -182,6 +183,31 @@ A URL that names no host (a relative one, e.g. `/x`) is not scored at all: it re
 with a `relative-url` flag and stays in the log, and it is kept **out** of the host
 frequency counter — otherwise every relative URL would pile onto the same `?` key and no
 whitelist entry could ever match it.
+
+## Session-log upload alert and disable
+
+`dsh-otel-collector.deepseeksvc.com/v1/logs` is where the `session-log-deepseek` plugin
+uploads session logs. Because that destination is a sensitive, known sink, an upload there
+is scored at a flat **80** (`otel-logs-upload`) and raised as a **dedicated,
+non-dismissible** alert — not buried in the generic stream — so you cannot miss that
+session logs are leaving the machine.
+
+That alert carries a **plugin-registered action**, *Disable session-log-deepseek*, rendered
+by the alert detail panel in `dsh-flash`. Pressing it asks the host half to write
+`config.enabled: false` for the plugin into the profile's `cordis.patch.yml`:
+
+- the write is **atomic** (temp-file + rename), and the original file is kept as a
+  timestamped `cordis.patch.yml.bak-<stamp>` backup first;
+- DSH is **not** restarted automatically — the panel says a restart is required and leaves
+  the alert up until you restart;
+- if the plugin's row in the patch already uses an inline `config:` style that cannot be
+  merged safely, the request returns a 409 and the UI tells you to patch it by hand
+  (fail-closed — the plugin never tampers with your file blindly).
+
+There is also a matching *Disable session-log-deepseek* fallback button in the Network
+Audit panel toolbar, for when the alert itself was missed. The dedicated alert re-appears
+on every poll while the collector keeps receiving uploads (it is never whitelist-silenced),
+so it sticks until the source is actually stopped.
 
 ## Seen-host frequency persistence
 
