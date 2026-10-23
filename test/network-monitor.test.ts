@@ -640,7 +640,7 @@ test('#11: apply() activates against a context that throws on undeclared reads',
   ])
 })
 
-// ── session-log OTEL upload flag + patch-editor disable ──────────────────────
+// ── product-telemetry OTEL upload flag + patch-editor disable ───────────────
 
 test('isOtelLogsUpload matches the collector host + /v1/logs only', () => {
   assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/v1/logs'), true)
@@ -655,72 +655,79 @@ test('otel-logs-upload scores a flat 80 regardless of other factors', () => {
   const m = new NetworkMonitor(100)
   const e = m.record(
     { method: 'POST', url: 'https://dsh-otel-collector.deepseeksvc.com/v1/logs', reqBytes: 99, resBytes: 100, status: 200, durationMs: 10, tls: true },
-    'session-log-deepseek',
+    'desktop-product-telemetry',
   )
   assert.equal(e.risk, 80)
   assert.ok(e.flags.includes('otel-logs-upload'))
 })
 
 // The patch editor: appends when the plugin row is absent.
-test('patch editor appends a canonical disable block when the row is absent', () => {
+test('patch editor appends a canonical disable row when the row is absent', () => {
   const src = '- id: some-other-plugin\n  config:\n    enabled: true\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
   assert.equal(r.needsManual, false)
   assert.equal(r.changed, true)
-  assert.ok(r.next!.includes('- id: session-log-deepseek'))
-  assert.ok(r.next!.includes('config:'))
-  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('- id: desktop-product-telemetry'))
+  assert.ok(r.next!.includes('disabled: true'))
   // Never clobbers pre-existing content.
   assert.ok(r.next!.includes('some-other-plugin'))
 })
 
 // Already disabled → no content change.
 test('patch editor is a no-op when the target is already disabled', () => {
-  const src = '- id: session-log-deepseek\n  config:\n    enabled: false\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
+  const src = '- id: desktop-product-telemetry\n  disabled: true\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
   assert.equal(r.needsManual, false)
   assert.equal(r.changed, false)
   assert.equal(r.next, undefined)
 })
 
 // Disabling edits only the target plugin's own row, preserving other config keys.
-test('patch editor preserves sibling config keys while setting enabled:false', () => {
-  const src = '- id: a\n  config:\n    foo: 1\n- id: session-log-deepseek\n  config:\n    foo: 2\n    bar: 3\n- id: b\n  config:\n    foo: 4\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
+test('patch editor preserves sibling keys while setting top-level disabled:true', () => {
+  const src = '- id: a\n  config:\n    foo: 1\n- id: desktop-product-telemetry\n  config:\n    foo: 2\n    bar: 3\n- id: b\n  config:\n    foo: 4\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
   assert.equal(r.changed, true)
   assert.equal(r.needsManual, false)
-  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('disabled: true'))
   assert.ok(r.next!.includes('foo: 2'))
   assert.ok(r.next!.includes('bar: 3'))
   assert.ok(r.next!.includes('foo: 4'))
   assert.ok(r.next!.includes('foo: 1'))
 })
 
-// Inline/flow config we cannot safely merge → flagged manual, nothing written.
-test('patch editor flags manual when config uses an inline/flow form', () => {
-  const src = '- id: session-log-deepseek\n  config: { foo: 1 }\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
-  assert.equal(r.needsManual, true)
-  assert.equal(r.changed, false)
-  assert.equal(r.next, undefined)
-})
-
-// A previously blank config under the row still gains enabled:false safely.
-test('patch editor inserts config block when the row has no config key', () => {
-  const src = '- id: session-log-deepseek\n  version: 1\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
+// A row already carrying a top-level `disabled: false` is flipped to true.
+test('patch editor flips an existing top-level disabled false to true', () => {
+  const src = '- id: desktop-product-telemetry\n  disabled: false\n  config:\n    foo: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
   assert.equal(r.changed, true)
   assert.equal(r.needsManual, false)
-  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('disabled: true'))
+  assert.ok(!r.next!.includes('disabled: false'))
+  assert.ok(r.next!.includes('foo: 1'))
+})
+
+// A blank config under the row still gains the top-level disabled:true safely.
+test('patch editor inserts disabled:true when the row has no disable key', () => {
+  const src = '- id: desktop-product-telemetry\n  version: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('disabled: true'))
   assert.ok(r.next!.includes('version: 1'))
 })
 
 // Id matching is case-insensitive but scoped to the target plugin id.
 test('patch editor matches the plugin id case-insensitively', () => {
-  const src = '- id: Session-Log-DeepSeek\n  config:\n    foo: 1\n'
-  const r = _patchDisableText(src, 'session-log-deepseek')
+  const src = '- id: Desktop-Product-Telemetry\n  version: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
   assert.equal(r.changed, true)
-  assert.ok(r.next!.includes('enabled: false'))
+  assert.ok(r.next!.includes('disabled: true'))
+  // A different plugin id is never touched.
+  const src2 = '- id: session-log-deepseek\n  version: 1\n'
+  const r2 = _patchDisableText(src2, 'desktop-product-telemetry')
+  assert.equal(r2.changed, true)
+  assert.ok(r2.next!.includes('- id: desktop-product-telemetry'))
+  assert.ok(r2.next!.includes('session-log-deepseek'))
 })
 
 // ── profile-dir resolution for the disable route (#12) ─────────────────────

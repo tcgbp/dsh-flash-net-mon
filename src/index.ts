@@ -87,39 +87,48 @@ export const Config = Schema.object({
 const _requestContext = new AsyncLocalStorage<{ pluginId: string }>()
 const _UNKNOWN_PLUGIN = 'unknown'
 
-// ── session-log OTEL collector detection ────────────────────────────────────
-// The DSH session-log plugin (`session-log-deepseek`) uploads its logs to this
-// exact collector as OTLP/HTTP (`POST .../v1/logs`). That upload carries
-// conversation content across the network, so it is privacy-sensitive and the
-// network auditor must ALWAYS surface it — independent of any host/plugin
-// whitelist. Detection is observing-only: we never block the upload, we only
-// flag it so a dedicated, user-actionable alert can be raised.
+// ── OTEL product-telemetry collector detection ──────────────────────────────
+// The DSH host uploader `desktop-product-telemetry` (`@deepseek-ai/
+// dsh-host-product-telemetry-otel`) sends product usage events to this exact
+// collector as OTLP/HTTP (`POST .../v1/logs`). That upload carries usage
+// telemetry across the network, so it is privacy-sensitive and the network
+// auditor must ALWAYS surface it — independent of any host/plugin whitelist.
+// Detection is observing-only: we never block the upload, we only flag it so a
+// dedicated, user-actionable alert can be raised.
 const _OTEL_LOGS_HOST = 'dsh-otel-collector.deepseeksvc.com'
-/** Flag set on any entry targeting the session-log collector's `v1/logs`. */
+/** Flag set on any entry targeting the product-telemetry collector's `v1/logs`. */
 export const FLAG_OTEL_LOGS_UPLOAD = 'otel-logs-upload'
 /** Risk assigned to a detected logs upload — above the normal unknown-host
  *  (30–45) band so it reliably clears the alert threshold (80 ≥ default warn). */
 const _OTEL_LOGS_RISK = 80
 /** The plugin a detected upload is attributed to and that the "disable" action
- *  targets via the profile's cordis patch (`config.enabled: false`). */
-const _SESSION_LOG_PLUGIN_ID = 'session-log-deepseek'
+ *  targets via the profile's cordis patch. This is the REAL OTLP uploader: its
+ *  Config exposes NO `enabled` gate, so the only effective lever is a top-level
+ *  `disabled: true` on the entry row (the same idiom Boot uses in its own
+ *  `resolveTelemetryPatch`), matched by the entry's bare id. */
+const _TELEMETRY_PLUGIN_ID = 'desktop-product-telemetry'
 
-/** True for a request hitting the session-log collector's `v1/logs` upload. */
+/** True for a request hitting the product-telemetry collector's `v1/logs`. */
 export function isOtelLogsUpload(host: string, pathname: string): boolean {
   return (host || '').toLowerCase() === _OTEL_LOGS_HOST && (pathname || '') === '/v1/logs'
 }
 
-// ── profile `cordis.patch.yml` editing (the "disable session-log" action) ──
+// ── profile `cordis.patch.yml` editing (the "disable telemetry" action) ─────
 // The disable action in the alert/settings UI POSTs here; the host then edits
 // the current profile's `cordis.patch.yml` so the profile disables the
-// session-log plugin (`config.enabled: false`), applied on next restart.
+// `desktop-product-telemetry` plugin with a TOP-LEVEL `disabled: true` row,
+// applied on next restart. (Unlike the old `session-log-deepseek` target, the
+// real OTLP uploader has NO `enabled` Config field, so `config.enabled: false`
+// could never stop it; a row-level `disabled: true` is the only effective
+// lever, and Boot's own telemetry nudge uses exactly that idiom.)
 // The file is a YAML list of rows (the Loader's patch dialect: an override row
-// is *targeted by its `id`*, and its `config` is an entire replacement). To
-// stay strictly additive and never clobber a user's file, the editor below is
-// line-wise and touches ONLY the rows belonging to the target plugin: it adds a
-// canonical row when absent, and otherwise edits only an `enabled:`/`config:`
-// line in place. Any shape it refuses to rewrite is reported via `needsManual`
-// and the write is aborted (the backup is still taken first in the route).
+// is *targeted by its `id`*, and a top-level `disabled:` key is the whole
+// disable switch). To stay strictly additive and never clobber a user's file,
+// the editor below is line-wise and touches ONLY the rows belonging to the
+// target plugin: it adds a canonical row when absent, and otherwise edits only
+// a top-level `disabled:` line in place. Any shape it refuses to rewrite is
+// reported via `needsManual` and the write is aborted (the backup is still
+// taken first in the route).
 
 function _yamlIndent(s: string): number {
   const m = /^\s*/.exec(s)
@@ -142,8 +151,8 @@ interface _PatchEdit {
 }
 
 /**
- * Idempotently ensure `pluginId`'s row in a patch document carries
- * `config.enabled: false`. Returns the new full text plus flags.
+ * Idempotently ensure `pluginId`'s row in a patch document carries a top-level
+ * `disabled: true`. Returns the new full text plus flags.
  */
 export function _patchDisableText(text: string, pluginId: string): _PatchEdit {
   const target = pluginId.toLowerCase()
@@ -157,12 +166,12 @@ export function _patchDisableText(text: string, pluginId: string): _PatchEdit {
     if (id === target) { start = i; break }
   }
 
-  const cfgKey = '  config:'
-  const valKey = '    enabled: false'
+  // Top-level keys of the target row are indented 2 past the `- id:` bullet.
+  const rowIndent = _yamlIndent(start < 0 ? '  ' : raw[start]) + 2
 
-  // Row absent → append a canonical override row at the end of the list.
+  // Row absent → append a canonical disable row at the end of the list.
   if (start < 0) {
-    const block = `\n- id: ${pluginId}\n${cfgKey}\n${valKey}\n`
+    const block = `\n- id: ${pluginId}\n  disabled: true\n`
     return { next: text.replace(/\s*$/, '') + block, changed: true, needsManual: false }
   }
 
@@ -171,57 +180,35 @@ export function _patchDisableText(text: string, pluginId: string): _PatchEdit {
   while (end < raw.length && (raw[end].trim() === '' || /^\s/.test(raw[end]))) end++
   const block = raw.slice(start, end)
 
-  // Already disabled? (an enabled:false/no/off key anywhere in the block)
-  for (const l of block) {
-    if (/^\s*enabled\s*:\s*(false|no|off)\s*$/i.test(l)) {
-      return { changed: false, needsManual: false }
-    }
-  }
-
-  // Locate a block-style `config:` key inside the row.
-  let cfgIdx = -1
+  // Locate an existing top-level `disabled:` key within this row.
+  let disabledIdx = -1            // index into `block`
+  let alreadyDisabled = false
   for (let i = 1; i < block.length; i++) {
-    if (/^\s+config\s*:\s*$/.test(block[i])) { cfgIdx = i; break }
-    // An inline/flow config we won't rewrite → flag manual, keep original.
-    if (/^\s+config\s*:\s*(\{|\[|\S)/.test(block[i])) {
-      return { changed: false, needsManual: true }
-    }
-  }
-
-  // No config key at all → insert one right after the `- id:` line.
-  if (cfgIdx < 0) {
-    const idxInRaw = start + 1
-    // insert at the first non-blank line after id (usually index 1)
-    let ins = idxInRaw
-    while (ins < end && raw[ins].trim() === '') ins++
-    const next = [...raw]
-    next.splice(ins, 0, cfgKey, valKey)
-    return { next: next.join('\n'), changed: true, needsManual: false }
-  }
-
-  // Block-style config exists. Set `enabled: false` on an existing enabled key
-  // or insert it as the first key under `config:` (preserving every other key).
-  const valIndent = _yamlIndent(block[cfgIdx]) + 2
-  // scan the config subtree for an `enabled:` value line
-  let changedVal = false
-  for (let i = cfgIdx + 1; i < block.length; i++) {
     const l = block[i]
-    if (l.trim() === '' || _yamlIndent(l) <= _yamlIndent(block[cfgIdx])) break
-    if (_yamlKey(l) === 'enabled') {
-      const pad = ' '.repeat(_yamlIndent(l))
-      const absIdx = start + i
-      raw[absIdx] = `${pad}enabled: false`
-      changedVal = true
+    if (l.trim() === '') continue
+    const ind = _yamlIndent(l)
+    if (ind < rowIndent) break
+    if (ind === rowIndent && _yamlKey(l) === 'disabled') {
+      disabledIdx = i
+      alreadyDisabled = /^disabled\s*:\s*true\b/i.test(l.trim())
       break
     }
   }
-  if (changedVal) {
+
+  // Already disabled → nothing to change.
+  if (disabledIdx >= 0 && alreadyDisabled) {
+    return { changed: false, needsManual: false }
+  }
+
+  // Existing top-level `disabled:` key (with any value) → force it to true.
+  if (disabledIdx >= 0) {
+    raw[start + disabledIdx] = ' '.repeat(rowIndent) + 'disabled: true'
     return { next: raw.join('\n'), changed: true, needsManual: false }
   }
-  // Insert `enabled: false` as the first key under config:
-  const absInsert = start + cfgIdx + 1
+
+  // No top-level `disabled:` key → insert one right after the `- id:` line.
   const next = [...raw]
-  next.splice(absInsert, 0, ' '.repeat(valIndent) + 'enabled: false')
+  next.splice(start + 1, 0, ' '.repeat(rowIndent) + 'disabled: true')
   return { next: next.join('\n'), changed: true, needsManual: false }
 }
 
@@ -1538,11 +1525,13 @@ export function apply(ctx: Context, config: NetMonConfig) {
       },
     }), 'dsh-flash-net-mon: POST /plugins/dsh-flash-net-mon/network-plugin-whitelist')
 
-    // #12 — disable the session-log plugin (the source of the `otel-logs-upload`
-    // collector uploads we surface in alerts). Writes `config.enabled: false`
-    // for the plugin into the profile's `cordis.patch.yml`, atomically (temp +
-    // rename) and after keeping a timestamped backup, WITHOUT restarting DSH.
-    // The client tells the user a restart is required for it to take effect.
+    // #12 — disable the `desktop-product-telemetry` plugin (the REAL source of
+    // the `otel-logs-upload` collector uploads we surface in alerts). Writes a
+    // top-level `disabled: true` row for the plugin into the profile's
+    // `cordis.patch.yml`, atomically (temp + rename) and after keeping a
+    // timestamped backup, WITHOUT restarting DSH. (The plugin's Config has no
+    // `enabled` field, so a row-level `disabled: true` is the only gate that
+    // works.) The client tells the user a restart is required to take effect.
     wsCtx.effect(() => wsCtx.webServer.register({
       kind: 'exact',
       path: '/plugins/dsh-flash-net-mon/disable-session-log',
@@ -1591,10 +1580,10 @@ export function apply(ctx: Context, config: NetMonConfig) {
           sendJson(res, 500, { error: `Failed to read ${patch}: ${(err as Error).message}` })
           return
         }
-        const edit = _patchDisableText(text, _SESSION_LOG_PLUGIN_ID)
+        const edit = _patchDisableText(text, _TELEMETRY_PLUGIN_ID)
         if (edit.needsManual && edit.next === undefined) {
           sendJson(res, 409, {
-            error: 'The session-log row in cordis.patch.yml uses an inline config style that cannot be merged safely; add `config:\n  enabled: false` under it manually.',
+            error: 'The telemetry row in cordis.patch.yml uses a shape that cannot be merged safely; add `disabled: true` under it manually.',
           })
           return
         }
