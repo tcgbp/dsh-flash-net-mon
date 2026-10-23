@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '24'
           cache: 'pnpm'
 
       # 3. 用 pnpm 安装依赖
@@ -49,7 +49,7 @@ jobs:
         run: pnpm test
 
       # 4. 发布前升级 npm 到 11.x（满足 Trusted Publishing 最低要求 >= 11.5.1）
-      #    不要用 @latest，否则 npm 12 会因 Node 22.14.0 不满足 engine 要求而失败
+      #    不要用 @latest，保持固定 npm@11（Trusted Publishing 最低要求 >= 11.5.1）
       - name: Upgrade npm for Trusted Publishing
         run: npm install -g npm@11
 
