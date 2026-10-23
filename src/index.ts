@@ -25,9 +25,10 @@ import nodeHttps from 'node:https'
 import type {} from '@deepseek-ai/dsh-settings'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Volatile } from '@deepseek-ai/cordis'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync as renameFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync as renameFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 // Default export only (`export default Schema`); there is no named `Schema`.
 import Schema from '@deepseek-ai/schemastery'
 
@@ -225,15 +226,78 @@ export function _patchDisableText(text: string, pluginId: string): _PatchEdit {
 }
 
 /**
- * Locate the current profile's `cordis.patch.yml`. Uses `$DSH_PROFILE_DIR`
- * (set in every profile-launched Harness shell) with a `$DSH_HOME`/`.dsh`
- * fallback. Returns undefined when no profile directory can be resolved.
+ * Resolvers the profile-dir lookup can use; each is optional.
+ *
+ * **Do not assume `$DSH_PROFILE_DIR` is set in the host process.** MEASURED in
+ * dock/dsh-flash: the harness exports `DSH_PROFILE` / `DSH_PROFILE_DIR` into
+ * every *shell call* of a profile-launched session, not into the Electron host
+ * process, so a host plugin sees neither. The launcher DOES publish the answer
+ * before any plugin mounts: the `profileContext` service carries `{name, dir,
+ * patchPath}` (its `patchPath` is exactly the `cordis.patch.yml` the running
+ * loader watches, the strongest signal), and the `launchEnvironment` service
+ * snapshots the process-wide shell env. `ctx.baseUrl` is the boot config's
+ * directory as an independent second. `process.env` is the last resort.
  */
-function _resolveProfilePatch(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const dir = (env.DSH_PROFILE_DIR || '').trim() || (env.DSH_HOME || '').trim()
-  if (!dir) return undefined
-  const path = join(dir, 'cordis.patch.yml')
-  if (existsSync(path) || dir) return path
+interface _ProfileResolvers {
+  /** `profileContext` service: { name, dir, patchPath } from the launcher. */
+  profileContext?: { name?: string; dir?: string; patchPath?: string } | null
+  /** Snapshot lookup — returns the launch env value for the first hit. */
+  readLaunchEnv?: (names: string[]) => string | null
+  /** Path of the boot config/profile file, when this was a file boot. */
+  fileConfigPath?: string | null
+}
+
+/**
+ * Locate the current profile's `cordis.patch.yml`. Uses DSH's published
+ * `profileContext`/`launchEnvironment` services when given, else falls back to
+ * `$DSH_PROFILE_DIR` / `$DSH_HOME` / `.dsh/profiles` walking. Returns undefined
+ * when no profile directory can be resolved.
+ */
+export function _resolveProfilePatch(resolvers?: _ProfileResolvers): string | undefined {
+  const candidates: string[] = []
+  const push = (dir: string | null | undefined) => {
+    if (dir && candidates.indexOf(dir) === -1) candidates.push(dir)
+  }
+
+  // 1. Launcher-published facts — most reliable, first.
+  if (resolvers?.profileContext) {
+    const pc = resolvers.profileContext
+    push(pc.dir)
+    if (pc.patchPath) push(dirname(pc.patchPath))
+  }
+  // 2. Boot config directory (the config's own folder in a file boot).
+  if (resolvers?.fileConfigPath) push(dirname(resolvers.fileConfigPath))
+
+  // 3. Shell environment via the launch-env snapshot (or process.env).
+  const le = (
+    resolvers && resolvers.readLaunchEnv
+      ? (names: string[]) => resolvers.readLaunchEnv!(names)
+      : (names: string[]) => (process.env[names[0]] || '').trim() || null
+  )
+  push(le(['DSH_PROFILE_DIR']))
+  const home = le(['DSH_HOME']) || join(homedir(), '.dsh')
+  const named = le(['DSH_PROFILE']) || (resolvers?.profileContext && resolvers.profileContext.name)
+  if (named) push(join(home, 'profiles', named))
+
+  // 4. Command-line / explicit, and scanned profiles.
+  const argv = process.argv
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '--profile') push(join(home, 'profiles', argv[i + 1]))
+    else if (argv[i] === '--profile-dir') push(argv[i + 1])
+  }
+  try {
+    for (const entry of readdirSync(join(home, 'profiles'))) push(join(home, 'profiles', entry))
+  } catch (_) { /* no profiles dir */ }
+  push(process.cwd())
+
+  // Prefer a candidate whose patch file actually exists (the watched document);
+  // otherwise fall back to the first resolvable directory so a fresh profile
+  // can still be written into.
+  for (const dir of candidates) {
+    const path = join(dir, 'cordis.patch.yml')
+    if (existsSync(path)) return path
+  }
+  if (candidates.length) return join(candidates[0], 'cordis.patch.yml')
   return undefined
 }
 
@@ -1489,9 +1553,35 @@ export function apply(ctx: Context, config: NetMonConfig) {
           res.end()
           return
         }
-        const patch = _resolveProfilePatch()
+        // Resolve the profile patch from DSH's published host services
+        // (profileContext = the launcher's authoritative answer, incl. the
+        // watched patchPath; launchEnvironment = a shell-env snapshot). These
+        // are what a running host actually sees — process.env is a last resort
+        // and is typically absent in the Electron host process.
+        let pc: any = null
+        try { pc = wsCtx.get ? wsCtx.get('profileContext') : null } catch (_) { pc = null }
+        let launchEnv: ((names: string[]) => string | null) | null = null
+        try {
+          const svc = wsCtx.get ? wsCtx.get('launchEnvironment') : null
+          if (svc && typeof svc.get === 'function') {
+            launchEnv = (names: string[]) => {
+              const v = svc.get(names[0])
+              const val = v && typeof v === 'object' ? (v as { value?: string }).value : v
+              return (val || '').trim() || null
+            }
+          }
+        } catch (_) { launchEnv = null }
+        let baseUrl: string | null = null
+        try { baseUrl = (wsCtx as any).baseUrl ?? (ctx as any).baseUrl ?? null } catch (_) { baseUrl = null }
+        const fileConfigPath = baseUrl && typeof baseUrl === 'string' && baseUrl.startsWith('file:')
+          ? fileURLToPath(baseUrl) : null
+        const patch = _resolveProfilePatch({
+          profileContext: pc,
+          readLaunchEnv: launchEnv ?? undefined,
+          fileConfigPath,
+        })
         if (!patch) {
-          sendJson(res, 400, { error: 'Unable to resolve the profile directory (set $DSH_PROFILE_DIR)' })
+          sendJson(res, 400, { error: 'Unable to resolve the profile directory (no profileContext service, $DSH_PROFILE_DIR or $DSH_HOME)' })
           return
         }
         let text: string

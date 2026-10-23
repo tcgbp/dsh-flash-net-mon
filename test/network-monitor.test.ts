@@ -722,3 +722,70 @@ test('patch editor matches the plugin id case-insensitively', () => {
   assert.equal(r.changed, true)
   assert.ok(r.next!.includes('enabled: false'))
 })
+
+// ── profile-dir resolution for the disable route (#12) ─────────────────────
+// Regression: _resolveProfilePatch() used to read only $DSH_PROFILE_DIR from
+// process.env, which the running Electron/harness host does NOT export (the
+// harness injects it into profile-launched *shells*, not the host process). The
+// route then 400ed before writing. The fix resolves via the launcher-published
+// `profileContext` / `launchEnvironment` services first, then env, then .dsh.
+function makeTmpProfile(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-nm-test-'))
+  writeFileSync(join(dir, 'cordis.patch.yml'), '- id: x\n')
+  return dir
+}
+
+let _resolveProfilePatch: any
+try {
+  ;({ _resolveProfilePatch } = await import('../dist/index.js'))
+} catch { /* older dist */ }
+
+test('_resolveProfilePatch prefers profileContext.dir when patch exists there', () => {
+  const dir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({ profileContext: { name: 'p', dir, patchPath: join(dir, 'cordis.patch.yml') } })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch uses patchPath dir over an absent dir', () => {
+  const dir = makeTmpProfile()
+  const other = join(tmpdir(), 'dsh-nm-absent-' + Math.random().toString(36).slice(2))
+  try {
+    const got = _resolveProfilePatch({ profileContext: { name: 'p', dir: other, patchPath: join(dir, 'cordis.patch.yml') } })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch falls back to DSH_PROFILE_DIR via launch env', () => {
+  const dir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({
+      readLaunchEnv: (names) => (names[0] === 'DSH_PROFILE_DIR' ? dir : process.env[names[0]] || null),
+    })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch prefers an existing patch under profileContext over env DSH_PROFILE_DIR', () => {
+  // Resolver is live in a host where $DSH_PROFILE_DIR may still be set; the
+  // launcher-published profileContext with an existing patch must still win.
+  const dir = makeTmpProfile()
+  const envDir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({
+      profileContext: { name: 'p', dir, patchPath: join(dir, 'cordis.patch.yml') },
+      readLaunchEnv: (names) => (names[0] === 'DSH_PROFILE_DIR' ? envDir : null),
+    })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(envDir, { recursive: true, force: true })
+  }
+})
+
+test('_resolveProfilePatch always resolves via cwd fallback (never 400s)', () => {
+  // Even with no profile service or env, the cwd candidate guarantees a return.
+  const got = _resolveProfilePatch({})
+  assert.ok(typeof got === 'string' && got.endsWith('cordis.patch.yml'))
+})
