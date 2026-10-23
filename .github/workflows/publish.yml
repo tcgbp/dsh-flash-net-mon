@@ -1,5 +1,4 @@
 name: Publish to npm
-
 on:
   push:
     tags:
@@ -25,29 +24,35 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       # 1. 先安装 pnpm（必须在 setup-node 之前，否则 cache: 'pnpm' 无法工作）
+      #    使用 11.5.3+ 以原生支持 OIDC Trusted Publishing
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9   # 若 package.json 有 packageManager 字段，可删掉这行让它自动读取
+          version: 11.5.3
 
       # 2. 设置 Node.js 并启用 pnpm 缓存
+      #    注意：不要加 registry-url，否则会写入占位 token，干扰 OIDC 认证
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'
-          registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
 
-      # 3. 用 pnpm 安装依赖（--frozen-lockfile 等价于 npm ci）
+      # 3. 用 pnpm 安装依赖
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build package (if applicable)
-        run: pnpm run build --if-present
+        run: pnpm run --if-present build
 
       - name: Run tests
         run: pnpm test
 
-      # 4. 用 pnpm 发布，OIDC 会自动生效
+      # 4. 发布前升级 npm 到 11.x（满足 Trusted Publishing 最低要求 >= 11.5.1）
+      #    不要用 @latest，否则 npm 12 会因 Node 22.14.0 不满足 engine 要求而失败
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@11
+
+      # 5. 用 pnpm 发布，OIDC 与 provenance 会自动生效
       - name: Publish to npm
         run: pnpm publish --access public --no-git-checks --provenance

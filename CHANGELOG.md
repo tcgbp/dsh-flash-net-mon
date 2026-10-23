@@ -11,6 +11,14 @@ grades each outbound request normal / suspect / dangerous and offers filtering
 and whitelists. Auditing is off by default; once you turn it on it persists across
 restarts (see the 0.3.0 note on the single-authority setting).
 
+## 0.3.3
+
+**Release engineering only — no runtime behaviour change.** The publish workflow is
+corrected: `pnpm run --if-present build` (the flag belongs to pnpm, not the run script)
+instead of the mis-ordered `pnpm run build --if-present`, pnpm pinned to `11.5.3`, and
+the npm upgrade step pinned to `npm@11` for trusted publishing — no `registry-url`, so
+OIDC/provenance applies on publish.
+
 ## 0.3.2
 
 **Fixed: the connectivity heartbeat polled the wrong health route.** The network-alert
