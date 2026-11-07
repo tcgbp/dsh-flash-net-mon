@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH standards check — dsh-flash-net-mon@0.3.3</title>
+<style>
+:root{color-scheme:light dark}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#1f2328;background:#fff}
+h1{font-size:1.45rem;margin:0 0 .35rem}
+h2{font-size:1.1rem;margin:1.8rem 0 .5rem;border-bottom:1px solid #d0d7de;padding-bottom:.25rem}
+.headline{font-size:1.05rem;font-weight:600;background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:.65rem .8rem}
+.meta{margin:.6rem 0 0;padding-left:1.1rem;color:#57606a}
+.muted{color:#57606a;font-size:.9rem}
+table{border-collapse:collapse;width:100%;margin:.4rem 0 1rem;font-size:.9rem}
+th,td{border:1px solid #d0d7de;padding:.3rem .5rem;text-align:left;vertical-align:top}
+th{background:#f6f8fa}
+td.result{font-weight:600;white-space:nowrap}
+td.result.fail{color:#b42318}
+td.result.warn{color:#9a6700}
+td.result.na,td.result.error,td.result.not-run{color:#57606a}
+.none{color:#57606a}
+footer{margin-top:2rem;padding-top:.8rem;border-top:1px solid #d0d7de;color:#57606a;font-size:.9rem}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}h2,.headline,th,td,footer{border-color:#30363d}.headline,th{background:#161b22}.meta,.muted,.none,footer{color:#8b949e}td.result.fail{color:#ff7b72}td.result.warn{color:#d29922}}
+</style>
+</head>
+<body>
+<h1>DSH standards check — dsh-flash-net-mon@0.3.3</h1>
+<p class="headline">ds-c/package · runtime 0.2.2-rc.1 host · blocking 0 · hygiene 1 · partial 0 · not checked 3/14</p>
+<ul class="meta">
+<li>Status: <strong>incomplete</strong> (exit 2) · Level: DS-C (package)</li>
+<li>Anchor: dsh=0.2.2-rc.1 (source=host)</li>
+<li>Coverage: 11/14 checks evaluated · declared fields 3/5</li>
+</ul>
+<h2>Priority fixes (up to 3)</h2>
+<ol><li><strong>WARN C-11.5</strong> (DSC-11) — 删掉未使用的 capability，或补上实际调用；动态触发无法静态确认时在 README 说明。<br><span class="muted">Why: 过度声明会误导用户，也会让权限面看起来比实际大。</span><br><span class="muted">Docs: <a href="https://github.com/PerryLink/dsh-plugin-guide/blob/v0.5.0/docs/entry.md#capability-triggers" rel="noreferrer noopener">https://github.com/PerryLink/dsh-plugin-guide/blob/v0.5.0/docs/entry.md#capability-triggers</a></span></li></ol>
+<h2>Blocking (FAIL) — 0</h2>
+<p class="none">None.</p>
+<h2>Hygiene (WARN) — 1</h2>
+<table><thead><tr><th>id</th><th>clause</th><th>result</th><th>coverage</th><th>reason</th></tr></thead><tbody>
+<tr><td>DSC-11</td><td>C-11</td><td class="result warn">WARN</td><td>full</td><td>C-11.5: declared capability network:ingress was not observed statically | C-11.5: declared capability fs:read was not observed statically | C-11.5: declared capability fs:write was not observed statically [declaration,advisory]</td></tr>
+</tbody></table>
+<h2>Partly checked (static subset) — 0</h2>
+<p class="none">None.</p>
+<h2>Not checked (NA / not-run / ERROR) — 3</h2>
+<table><thead><tr><th>id</th><th>clause</th><th>result</th><th>coverage</th><th>reason</th></tr></thead><tbody>
+<tr><td>DSC-03</td><td>C-3</td><td class="result na">NA</td><td>not-run</td><td>install spec not supplied (package profile)</td></tr>
+<tr><td>DSC-05</td><td>C-5</td><td class="result na">NA</td><td>not-run</td><td>C-5.1: no provide declaration</td></tr>
+<tr><td>DSC-14</td><td>C-14</td><td class="result error">ERROR</td><td>not-run</td><td>G3 partial: 0/1 ACTIVE; target profile does not provide all services</td></tr>
+</tbody></table>
+<h2>Security (advisory)</h2>
+<ul class="security">
+<li>Status: <strong>incomplete</strong> · blocking 0 · warn 0 · advisory 0 · partial 3 · notRun 1</li>
+<li><strong class="result na">DSC-22 NA</strong> — no registry metadata/attestation input; not-run</li>
+<li class="muted">Static clues only: this block is not a security proof, audit, or certification.</li>
+</ul>
+<h2>Passed — 10</h2>
+<p>DSC-01, DSC-02, DSC-04, DSC-06, DSC-07, DSC-08, DSC-09, DSC-10, DSC-12, DSC-13</p>
+<h2>Advice (non-blocking) — 1</h2>
+<ul><li><strong>WARN C-11.5</strong> (DSC-11): 删掉未使用的 capability，或补上实际调用；动态触发无法静态确认时在 README 说明。 <a href="https://github.com/PerryLink/dsh-plugin-guide/blob/v0.5.0/docs/entry.md#capability-triggers" rel="noreferrer noopener">https://github.com/PerryLink/dsh-plugin-guide/blob/v0.5.0/docs/entry.md#capability-triggers</a></li></ul>
+<h2>What this report does not check</h2>
+<ul>
+<li><strong>DSC-03</strong> (C-3): install spec not supplied (package profile) <span class="muted">enable: pass --install-spec &lt;spec&gt;, or --market-index &lt;file&gt; --plugin-name &lt;name&gt;</span></li>
+<li><strong>DSC-05</strong> (C-5): C-5.1: no provide declaration <span class="muted">enable: pass --runtime &lt;path&gt; (plugin L1-L3) or --host &lt;dir&gt; (bundle G0-G3); do not use --no-exec</span></li>
+<li><strong>DSC-14</strong> (C-14): G3 partial: 0/1 ACTIVE; target profile does not provide all services <span class="muted">enable: pass --host &lt;app-boot/lib/index.js&gt; for bundle G0-G3, or --runtime &lt;path&gt; for a plugin; omit --no-exec and --entry-claim static</span></li>
+<li>Runtime execution beyond the checks listed above is not observed by this report.</li>
+<li>It does not certify, rank, audit security, or endorse the package.</li>
+</ul>
+<footer>Non-official report. This is not a certification, security audit, endorsement, or ranking. Hygiene warnings are not a clean pass; items under &quot;Not checked&quot; were not inspected.</footer>
+</body>
+</html>

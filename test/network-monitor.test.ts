@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText, apply, resolveAuditDataDir } from '../dist/index.js'
+import { NetworkMonitor, SeenHostStore, _estimateReqBytes, installHttpTracer, withPluginContext, resolvePluginId, _canonicalHost, mkRuntime, _pluginIdFromStackText, apply, resolveAuditDataDir, isOtelLogsUpload, _patchDisableText } from '../dist/index.js'
 import nodeHttp from 'node:http'
 
 function rec(mon, over = {}, pid = 'test-plugin') {
@@ -632,9 +632,167 @@ test('#11: apply() activates against a context that throws on undeclared reads',
     },
   }))
   assert.deepEqual(routes.map((r) => r.path).sort(), [
+    '/plugins/dsh-flash-net-mon/disable-session-log',
     '/plugins/dsh-flash-net-mon/network-alerts',
     '/plugins/dsh-flash-net-mon/network-log',
     '/plugins/dsh-flash-net-mon/network-plugin-whitelist',
     '/plugins/dsh-flash-net-mon/network-whitelist',
   ])
+})
+
+// ── product-telemetry OTEL upload flag + patch-editor disable ───────────────
+
+test('isOtelLogsUpload matches the collector host + /v1/logs only', () => {
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/v1/logs'), true)
+  // wrong host
+  assert.equal(isOtelLogsUpload('evil.example', '/v1/logs'), false)
+  // wrong path
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/v2/logs'), false)
+  assert.equal(isOtelLogsUpload('dsh-otel-collector.deepseeksvc.com', '/'), false)
+})
+
+test('otel-logs-upload scores a flat 80 regardless of other factors', () => {
+  const m = new NetworkMonitor(100)
+  const e = m.record(
+    { method: 'POST', url: 'https://dsh-otel-collector.deepseeksvc.com/v1/logs', reqBytes: 99, resBytes: 100, status: 200, durationMs: 10, tls: true },
+    'desktop-product-telemetry',
+  )
+  assert.equal(e.risk, 80)
+  assert.ok(e.flags.includes('otel-logs-upload'))
+})
+
+// The patch editor: appends when the plugin row is absent.
+test('patch editor appends a canonical disable row when the row is absent', () => {
+  const src = '- id: some-other-plugin\n  config:\n    enabled: true\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.needsManual, false)
+  assert.equal(r.changed, true)
+  assert.ok(r.next!.includes('- id: desktop-product-telemetry'))
+  assert.ok(r.next!.includes('disabled: true'))
+  // Never clobbers pre-existing content.
+  assert.ok(r.next!.includes('some-other-plugin'))
+})
+
+// Already disabled → no content change.
+test('patch editor is a no-op when the target is already disabled', () => {
+  const src = '- id: desktop-product-telemetry\n  disabled: true\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.needsManual, false)
+  assert.equal(r.changed, false)
+  assert.equal(r.next, undefined)
+})
+
+// Disabling edits only the target plugin's own row, preserving other config keys.
+test('patch editor preserves sibling keys while setting top-level disabled:true', () => {
+  const src = '- id: a\n  config:\n    foo: 1\n- id: desktop-product-telemetry\n  config:\n    foo: 2\n    bar: 3\n- id: b\n  config:\n    foo: 4\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('disabled: true'))
+  assert.ok(r.next!.includes('foo: 2'))
+  assert.ok(r.next!.includes('bar: 3'))
+  assert.ok(r.next!.includes('foo: 4'))
+  assert.ok(r.next!.includes('foo: 1'))
+})
+
+// A row already carrying a top-level `disabled: false` is flipped to true.
+test('patch editor flips an existing top-level disabled false to true', () => {
+  const src = '- id: desktop-product-telemetry\n  disabled: false\n  config:\n    foo: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('disabled: true'))
+  assert.ok(!r.next!.includes('disabled: false'))
+  assert.ok(r.next!.includes('foo: 1'))
+})
+
+// A blank config under the row still gains the top-level disabled:true safely.
+test('patch editor inserts disabled:true when the row has no disable key', () => {
+  const src = '- id: desktop-product-telemetry\n  version: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.changed, true)
+  assert.equal(r.needsManual, false)
+  assert.ok(r.next!.includes('disabled: true'))
+  assert.ok(r.next!.includes('version: 1'))
+})
+
+// Id matching is case-insensitive but scoped to the target plugin id.
+test('patch editor matches the plugin id case-insensitively', () => {
+  const src = '- id: Desktop-Product-Telemetry\n  version: 1\n'
+  const r = _patchDisableText(src, 'desktop-product-telemetry')
+  assert.equal(r.changed, true)
+  assert.ok(r.next!.includes('disabled: true'))
+  // A different plugin id is never touched.
+  const src2 = '- id: session-log-deepseek\n  version: 1\n'
+  const r2 = _patchDisableText(src2, 'desktop-product-telemetry')
+  assert.equal(r2.changed, true)
+  assert.ok(r2.next!.includes('- id: desktop-product-telemetry'))
+  assert.ok(r2.next!.includes('session-log-deepseek'))
+})
+
+// ── profile-dir resolution for the disable route (#12) ─────────────────────
+// Regression: _resolveProfilePatch() used to read only $DSH_PROFILE_DIR from
+// process.env, which the running Electron/harness host does NOT export (the
+// harness injects it into profile-launched *shells*, not the host process). The
+// route then 400ed before writing. The fix resolves via the launcher-published
+// `profileContext` / `launchEnvironment` services first, then env, then .dsh.
+function makeTmpProfile(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-nm-test-'))
+  writeFileSync(join(dir, 'cordis.patch.yml'), '- id: x\n')
+  return dir
+}
+
+let _resolveProfilePatch: any
+try {
+  ;({ _resolveProfilePatch } = await import('../dist/index.js'))
+} catch { /* older dist */ }
+
+test('_resolveProfilePatch prefers profileContext.dir when patch exists there', () => {
+  const dir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({ profileContext: { name: 'p', dir, patchPath: join(dir, 'cordis.patch.yml') } })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch uses patchPath dir over an absent dir', () => {
+  const dir = makeTmpProfile()
+  const other = join(tmpdir(), 'dsh-nm-absent-' + Math.random().toString(36).slice(2))
+  try {
+    const got = _resolveProfilePatch({ profileContext: { name: 'p', dir: other, patchPath: join(dir, 'cordis.patch.yml') } })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch falls back to DSH_PROFILE_DIR via launch env', () => {
+  const dir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({
+      readLaunchEnv: (names) => (names[0] === 'DSH_PROFILE_DIR' ? dir : process.env[names[0]] || null),
+    })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('_resolveProfilePatch prefers an existing patch under profileContext over env DSH_PROFILE_DIR', () => {
+  // Resolver is live in a host where $DSH_PROFILE_DIR may still be set; the
+  // launcher-published profileContext with an existing patch must still win.
+  const dir = makeTmpProfile()
+  const envDir = makeTmpProfile()
+  try {
+    const got = _resolveProfilePatch({
+      profileContext: { name: 'p', dir, patchPath: join(dir, 'cordis.patch.yml') },
+      readLaunchEnv: (names) => (names[0] === 'DSH_PROFILE_DIR' ? envDir : null),
+    })
+    assert.equal(got, join(dir, 'cordis.patch.yml'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(envDir, { recursive: true, force: true })
+  }
+})
+
+test('_resolveProfilePatch always resolves via cwd fallback (never 400s)', () => {
+  // Even with no profile service or env, the cwd candidate guarantees a return.
+  const got = _resolveProfilePatch({})
+  assert.ok(typeof got === 'string' && got.endsWith('cordis.patch.yml'))
 })

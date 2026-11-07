@@ -1,9 +1,10 @@
 import nodeHttp from 'node:http';
 import nodeHttps from 'node:https';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync as renameFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // Default export only (`export default Schema`); there is no named `Schema`.
 import Schema from '@deepseek-ai/schemastery';
 export const name = 'dsh-flash-net-mon';
@@ -41,6 +42,173 @@ export const Config = Schema.object({
  */
 const _requestContext = new AsyncLocalStorage();
 const _UNKNOWN_PLUGIN = 'unknown';
+// ── OTEL product-telemetry collector detection ──────────────────────────────
+// The DSH host uploader `desktop-product-telemetry` (`@deepseek-ai/
+// dsh-host-product-telemetry-otel`) sends product usage events to this exact
+// collector as OTLP/HTTP (`POST .../v1/logs`). That upload carries usage
+// telemetry across the network, so it is privacy-sensitive and the network
+// auditor must ALWAYS surface it — independent of any host/plugin whitelist.
+// Detection is observing-only: we never block the upload, we only flag it so a
+// dedicated, user-actionable alert can be raised.
+const _OTEL_LOGS_HOST = 'dsh-otel-collector.deepseeksvc.com';
+/** Flag set on any entry targeting the product-telemetry collector's `v1/logs`. */
+export const FLAG_OTEL_LOGS_UPLOAD = 'otel-logs-upload';
+/** Risk assigned to a detected logs upload — above the normal unknown-host
+ *  (30–45) band so it reliably clears the alert threshold (80 ≥ default warn). */
+const _OTEL_LOGS_RISK = 80;
+/** The plugin a detected upload is attributed to and that the "disable" action
+ *  targets via the profile's cordis patch. This is the REAL OTLP uploader: its
+ *  Config exposes NO `enabled` gate, so the only effective lever is a top-level
+ *  `disabled: true` on the entry row (the same idiom Boot uses in its own
+ *  `resolveTelemetryPatch`), matched by the entry's bare id. */
+const _TELEMETRY_PLUGIN_ID = 'desktop-product-telemetry';
+/** True for a request hitting the product-telemetry collector's `v1/logs`. */
+export function isOtelLogsUpload(host, pathname) {
+    return (host || '').toLowerCase() === _OTEL_LOGS_HOST && (pathname || '') === '/v1/logs';
+}
+// ── profile `cordis.patch.yml` editing (the "disable telemetry" action) ─────
+// The disable action in the alert/settings UI POSTs here; the host then edits
+// the current profile's `cordis.patch.yml` so the profile disables the
+// `desktop-product-telemetry` plugin with a TOP-LEVEL `disabled: true` row,
+// applied on next restart. (Unlike the old `session-log-deepseek` target, the
+// real OTLP uploader has NO `enabled` Config field, so `config.enabled: false`
+// could never stop it; a row-level `disabled: true` is the only effective
+// lever, and Boot's own telemetry nudge uses exactly that idiom.)
+// The file is a YAML list of rows (the Loader's patch dialect: an override row
+// is *targeted by its `id`*, and a top-level `disabled:` key is the whole
+// disable switch). To stay strictly additive and never clobber a user's file,
+// the editor below is line-wise and touches ONLY the rows belonging to the
+// target plugin: it adds a canonical row when absent, and otherwise edits only
+// a top-level `disabled:` line in place. Any shape it refuses to rewrite is
+// reported via `needsManual` and the write is aborted (the backup is still
+// taken first in the route).
+function _yamlIndent(s) {
+    const m = /^\s*/.exec(s);
+    return m ? m[0].length : 0;
+}
+function _yamlKey(s) {
+    s = s.trim();
+    const m = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)\s*:/.exec(s);
+    return m ? m[1] : null;
+}
+/**
+ * Idempotently ensure `pluginId`'s row in a patch document carries a top-level
+ * `disabled: true`. Returns the new full text plus flags.
+ */
+export function _patchDisableText(text, pluginId) {
+    const target = pluginId.toLowerCase();
+    const raw = text.split(/\r?\n/);
+    // Index of the first top-level row whose id equals target (-1 → absent).
+    let start = -1;
+    for (let i = 0; i < raw.length; i++) {
+        const m = /^-\s+id\s*:\s*(.+?)\s*$/.exec(raw[i]);
+        if (!m)
+            continue;
+        const id = m[1].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+        if (id === target) {
+            start = i;
+            break;
+        }
+    }
+    // Top-level keys of the target row are indented 2 past the `- id:` bullet.
+    const rowIndent = _yamlIndent(start < 0 ? '  ' : raw[start]) + 2;
+    // Row absent → append a canonical disable row at the end of the list.
+    if (start < 0) {
+        const block = `\n- id: ${pluginId}\n  disabled: true\n`;
+        return { next: text.replace(/\s*$/, '') + block, changed: true, needsManual: false };
+    }
+    // Row present → find where this row's block ends (next column-0 line).
+    let end = start + 1;
+    while (end < raw.length && (raw[end].trim() === '' || /^\s/.test(raw[end])))
+        end++;
+    const block = raw.slice(start, end);
+    // Locate an existing top-level `disabled:` key within this row.
+    let disabledIdx = -1; // index into `block`
+    let alreadyDisabled = false;
+    for (let i = 1; i < block.length; i++) {
+        const l = block[i];
+        if (l.trim() === '')
+            continue;
+        const ind = _yamlIndent(l);
+        if (ind < rowIndent)
+            break;
+        if (ind === rowIndent && _yamlKey(l) === 'disabled') {
+            disabledIdx = i;
+            alreadyDisabled = /^disabled\s*:\s*true\b/i.test(l.trim());
+            break;
+        }
+    }
+    // Already disabled → nothing to change.
+    if (disabledIdx >= 0 && alreadyDisabled) {
+        return { changed: false, needsManual: false };
+    }
+    // Existing top-level `disabled:` key (with any value) → force it to true.
+    if (disabledIdx >= 0) {
+        raw[start + disabledIdx] = ' '.repeat(rowIndent) + 'disabled: true';
+        return { next: raw.join('\n'), changed: true, needsManual: false };
+    }
+    // No top-level `disabled:` key → insert one right after the `- id:` line.
+    const next = [...raw];
+    next.splice(start + 1, 0, ' '.repeat(rowIndent) + 'disabled: true');
+    return { next: next.join('\n'), changed: true, needsManual: false };
+}
+/**
+ * Locate the current profile's `cordis.patch.yml`. Uses DSH's published
+ * `profileContext`/`launchEnvironment` services when given, else falls back to
+ * `$DSH_PROFILE_DIR` / `$DSH_HOME` / `.dsh/profiles` walking. Returns undefined
+ * when no profile directory can be resolved.
+ */
+export function _resolveProfilePatch(resolvers) {
+    const candidates = [];
+    const push = (dir) => {
+        if (dir && candidates.indexOf(dir) === -1)
+            candidates.push(dir);
+    };
+    // 1. Launcher-published facts — most reliable, first.
+    if (resolvers?.profileContext) {
+        const pc = resolvers.profileContext;
+        push(pc.dir);
+        if (pc.patchPath)
+            push(dirname(pc.patchPath));
+    }
+    // 2. Boot config directory (the config's own folder in a file boot).
+    if (resolvers?.fileConfigPath)
+        push(dirname(resolvers.fileConfigPath));
+    // 3. Shell environment via the launch-env snapshot (or process.env).
+    const le = (resolvers && resolvers.readLaunchEnv
+        ? (names) => resolvers.readLaunchEnv(names)
+        : (names) => (process.env[names[0]] || '').trim() || null);
+    push(le(['DSH_PROFILE_DIR']));
+    const home = le(['DSH_HOME']) || join(homedir(), '.dsh');
+    const named = le(['DSH_PROFILE']) || (resolvers?.profileContext && resolvers.profileContext.name);
+    if (named)
+        push(join(home, 'profiles', named));
+    // 4. Command-line / explicit, and scanned profiles.
+    const argv = process.argv;
+    for (let i = 0; i < argv.length - 1; i++) {
+        if (argv[i] === '--profile')
+            push(join(home, 'profiles', argv[i + 1]));
+        else if (argv[i] === '--profile-dir')
+            push(argv[i + 1]);
+    }
+    try {
+        for (const entry of readdirSync(join(home, 'profiles')))
+            push(join(home, 'profiles', entry));
+    }
+    catch (_) { /* no profiles dir */ }
+    push(process.cwd());
+    // Prefer a candidate whose patch file actually exists (the watched document);
+    // otherwise fall back to the first resolvable directory so a fresh profile
+    // can still be written into.
+    for (const dir of candidates) {
+        const path = join(dir, 'cordis.patch.yml');
+        if (existsSync(path))
+            return path;
+    }
+    if (candidates.length)
+        return join(candidates[0], 'cordis.patch.yml');
+    return undefined;
+}
 /**
  * #7 — make the reserved AsyncLocalStorage hook real. A DSH plugin that wants
  * its own outbound calls attributed precisely (instead of falling through to
@@ -545,7 +713,14 @@ export class NetworkMonitor {
         }
         return false;
     }
-    _score(host, pluginId, method, reqBytes, tls, isNew, absolute = true, redirectedToUntrusted = false) {
+    _score(host, pluginId, method, reqBytes, tls, isNew, absolute = true, redirectedToUntrusted = false, otelLogsUpload = false) {
+        // #12: a session-log OTEL collector upload is privacy-sensitive and must be
+        // surfaced unconditionally. Handled first so a user/endpoint/plugin trust
+        // cannot silence it, and with its own high risk (mirrors `redirected-host`
+        // which also bypasses trust). The serve-time alert filter keeps it too.
+        if (otelLogsUpload) {
+            return { risk: _OTEL_LOGS_RISK, flags: [FLAG_OTEL_LOGS_UPLOAD] };
+        }
         // Trusted host OR trusted plugin ⇨ no suspicion, no flags — unless the
         // response redirected to a DIFFERENT, untrusted host. That is exactly the
         // case #1 targets: you trusted `A`, but the data actually went to `B`.
@@ -650,7 +825,8 @@ export class NetworkMonitor {
         // misattributes scoped packages (e.g. resolves `@michengai` instead of
         // `@michengai/dsh-archive-manager`).
         const pluginId = preResolvedPluginId || resolvePluginId();
-        const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen, absolute, redirectedToUntrusted);
+        const otelLogsUpload = isOtelLogsUpload(host, pathname);
+        const { risk, flags } = this._score(host, pluginId, input.method, input.reqBytes, input.tls, firstSeen, absolute, redirectedToUntrusted, otelLogsUpload);
         const entry = {
             seq: ++this._seq,
             pluginId,
@@ -1113,7 +1289,7 @@ export function apply(ctx, config) {
                 runtime.monitor.flush();
             runtime.monitor = null;
         };
-    });
+    }, 'dsh-flash-net-mon.bootstrap');
     // ── C · Network audit — volatile-update subscription ─────────────────
     // Self-contained: listens for changes on its own audit paths only.
     ctx.on('loader/volatile-update', (paths) => {
@@ -1196,7 +1372,11 @@ export function apply(ctx, config) {
                     // on a host/plugin that is now trusted for real (and did not redirect
                     // outside) is silenced by a whitelist addition.
                     const redirected = Array.isArray(e.flags) && e.flags.includes('redirected-host');
-                    if (redirected)
+                    // A session-log collector logs upload is privacy-sensitive and must
+                    // stay visible on every poll regardless of the whitelist (see the
+                    // scorer's bypass in _score).
+                    const otelLogs = Array.isArray(e.flags) && e.flags.includes(FLAG_OTEL_LOGS_UPLOAD);
+                    if (redirected || otelLogs)
                         return true;
                     const trusted = runtime.monitor.isTrusted(e.host) || runtime.monitor.isTrustedPlugin(e.pluginId);
                     return !trusted;
@@ -1320,5 +1500,106 @@ export function apply(ctx, config) {
                 sendJson(res, 200, { ok: true, plugins });
             },
         }), 'dsh-flash-net-mon: POST /plugins/dsh-flash-net-mon/network-plugin-whitelist');
+        // #12 — disable the `desktop-product-telemetry` plugin (the REAL source of
+        // the `otel-logs-upload` collector uploads we surface in alerts). Writes a
+        // top-level `disabled: true` row for the plugin into the profile's
+        // `cordis.patch.yml`, atomically (temp + rename) and after keeping a
+        // timestamped backup, WITHOUT restarting DSH. (The plugin's Config has no
+        // `enabled` field, so a row-level `disabled: true` is the only gate that
+        // works.) The client tells the user a restart is required to take effect.
+        wsCtx.effect(() => wsCtx.webServer.register({
+            kind: 'exact',
+            path: '/plugins/dsh-flash-net-mon/disable-session-log',
+            handler: async (req, res) => {
+                if (req.method !== 'POST') {
+                    res.statusCode = 405;
+                    res.setHeader('allow', 'POST');
+                    res.end();
+                    return;
+                }
+                // Resolve the profile patch from DSH's published host services
+                // (profileContext = the launcher's authoritative answer, incl. the
+                // watched patchPath; launchEnvironment = a shell-env snapshot). These
+                // are what a running host actually sees — process.env is a last resort
+                // and is typically absent in the Electron host process.
+                let pc = null;
+                try {
+                    pc = wsCtx.get ? wsCtx.get('profileContext') : null;
+                }
+                catch (_) {
+                    pc = null;
+                }
+                let launchEnv = null;
+                try {
+                    const svc = wsCtx.get ? wsCtx.get('launchEnvironment') : null;
+                    if (svc && typeof svc.get === 'function') {
+                        launchEnv = (names) => {
+                            const v = svc.get(names[0]);
+                            const val = v && typeof v === 'object' ? v.value : v;
+                            return (val || '').trim() || null;
+                        };
+                    }
+                }
+                catch (_) {
+                    launchEnv = null;
+                }
+                let baseUrl = null;
+                try {
+                    baseUrl = wsCtx.baseUrl ?? ctx.baseUrl ?? null;
+                }
+                catch (_) {
+                    baseUrl = null;
+                }
+                const fileConfigPath = baseUrl && typeof baseUrl === 'string' && baseUrl.startsWith('file:')
+                    ? fileURLToPath(baseUrl) : null;
+                const patch = _resolveProfilePatch({
+                    profileContext: pc,
+                    readLaunchEnv: launchEnv ?? undefined,
+                    fileConfigPath,
+                });
+                if (!patch) {
+                    sendJson(res, 400, { error: 'Unable to resolve the profile directory (no profileContext service, $DSH_PROFILE_DIR or $DSH_HOME)' });
+                    return;
+                }
+                let text;
+                try {
+                    text = existsSync(patch) ? readFileSync(patch, 'utf8') : '';
+                }
+                catch (err) {
+                    sendJson(res, 500, { error: `Failed to read ${patch}: ${err.message}` });
+                    return;
+                }
+                const edit = _patchDisableText(text, _TELEMETRY_PLUGIN_ID);
+                if (edit.needsManual && edit.next === undefined) {
+                    sendJson(res, 409, {
+                        error: 'The telemetry row in cordis.patch.yml uses a shape that cannot be merged safely; add `disabled: true` under it manually.',
+                    });
+                    return;
+                }
+                try {
+                    const finalText = edit.next !== undefined ? edit.next : text;
+                    // Backup the ORIGINAL file first (always — cheap insurance), then
+                    // write the new content atomically via temp-file + rename.
+                    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const backup = `${patch}.bak-${stamp}`;
+                    if (existsSync(patch))
+                        copyFileSync(patch, backup);
+                    const tmp = `${patch}.tmp-${process.pid}-${Date.now()}`;
+                    writeFileSync(tmp, Buffer.from(finalText, 'utf8'));
+                    renameFileSync(tmp, patch);
+                    sendJson(res, 200, {
+                        ok: true,
+                        changed: edit.changed,
+                        needsManual: edit.needsManual,
+                        requiredRestart: true,
+                        path: patch,
+                        backup,
+                    });
+                }
+                catch (err) {
+                    sendJson(res, 500, { error: `Failed to write ${patch}: ${err.message}` });
+                }
+            },
+        }), 'dsh-flash-net-mon: POST /plugins/dsh-flash-net-mon/disable-session-log');
     });
 }
