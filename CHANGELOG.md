@@ -11,6 +11,29 @@ grades each outbound request normal / suspect / dangerous and offers filtering
 and whitelists. Auditing is off by default; once you turn it on it persists across
 restarts (see the 0.3.0 note on the single-authority setting).
 
+## 0.3.4
+
+**DSH plugin-spec conformance (metadata / refactor / docs — no observable change).**
+
+- Declare `engines.dsh` (`>=0.2.2-0 <0.3.0`) with `node >=24.9.0` in
+  `package.json`, so the DS-C checker can judge host compatibility.
+- Drop the dead client-side inject `@deepseek-ai/dsh-client-runtime` (removed
+  from the platform since 0.1.2-alpha.1); the surviving injects are the official
+  `locale`, `api-remotes` and `dsh-flash`.
+- Declare the genuinely-consumed surfaces: `dsh.capabilities` (`network:ingress`,
+  `network:egress`, `fs:read`, `fs:write`) and `dsh.labels` (`remote-access`), so
+  the ingress/egress routes and the patch.yml / seen-hosts.json writes stop being
+  hidden.
+- Label the host bootstrap `ctx.effect` (DSC-06 effect annotation); the five
+  `webServer` route effects were already labelled.
+- Rebuild `dist/index.js` to match `src/index.ts`.
+- Resolve the long-pending `CHANGELOG.md` merge conflict (fold the 0.3.3 session-
+  log-upload release-engineering notes into the existing 0.3.3 entry).
+- Tighten `README.md` / `README.zh-CN.md` wording about the (lazy) host-service
+  dependencies and list the declared capabilities.
+- Add `docs/conformance-{report,runtime}.{md,html}`, the `dsh-standards`
+  DS-C reports (blocking FAIL = 0).
+
 ## 0.3.3
 
 **Fix: whitelist additions now suppress alerts that were already in flight.** The
