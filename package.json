@@ -1,7 +1,7 @@
 {
   "name": "dsh-flash-net-mon",
   "version": "0.3.4",
-  "description": "Network monitor & outbound audit provider for the `dsh-flash` Quick Control panel — registers a network-alert provider and the opt-in network audit (fetch tracer) via ctx.get('dockFlashAlerts').",
+  "description": "Network monitor & outbound audit provider for the `dsh-flash` Quick Control panel — registers a network-alert provider and the opt-in network audit (fetch tracer) via ctx.get('dshFlashAlerts').",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

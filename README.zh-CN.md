@@ -33,13 +33,13 @@
 
 | 注册内容 | 通过 |
 | --- | --- |
-| 告警提供者 `dsh-flash-net-mon:network-alert`（心跳） | `ctx.get('dockFlashAlerts').registerProvider()` |
-| 告警提供者 `dsh-flash-net-mon:network-audit`（审计告警） | `ctx.get('dockFlashAlerts').registerProvider()` |
+| 告警提供者 `dsh-flash-net-mon:network-alert`（心跳） | `ctx.get('dshFlashAlerts').registerProvider()` |
+| 告警提供者 `dsh-flash-net-mon:network-audit`（审计告警） | `ctx.get('dshFlashAlerts').registerProvider()` |
 | 面板开关 `dsh-flash-net-mon:monitor-network` | `ctx.get('quickControl').registerSwitch()` |
 
-开关属性：`type: 'toggle'`、`group: 'system'`、`cluster: 'system-alerts'`、`order: 60`、`icon: 'signal'`。它的**可见性跟随 dsh-flash 的 `dock-flash:system-alerts` 总开关** —— 告警注册表没开时，这个开关也没有意义。
+开关属性：`type: 'toggle'`、`group: 'system'`、`cluster: 'system-alerts'`、`order: 60`、`icon: 'signal'`。它的**可见性跟随 dsh-flash 的 `dsh-flash:system-alerts` 总开关** —— 告警注册表没开时，这个开关也没有意义。
 
-> **双发现模式**：`ctx.get('quickControl')` / `ctx.get('dockFlashAlerts')` 是异步解析的，所以注册走三条路 —— 监听 `dock-flash:ready` 事件（应对 dsh-flash 比我们晚加载）、同步 `ctx.get()` 主动检查（应对它比我们早加载）、以及最多 15 次 × 200ms 的短轮询兜底。任一成功即置位 `_registered`，不重复注册。
+> **双发现模式**：`ctx.get('quickControl')` / `ctx.get('dshFlashAlerts')` 是异步解析的，所以注册走三条路 —— 监听 `dsh-flash:ready` 事件（应对 dsh-flash 比我们晚加载）、同步 `ctx.get()` 主动检查（应对它比我们早加载）、以及最多 15 次 × 200ms 的短轮询兜底。任一成功即置位 `_registered`，不重复注册。
 
 ## 面板与开关怎么用
 
@@ -177,7 +177,7 @@ withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都
 | 包 | 类型 | 用途 |
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | 插件框架 |
-| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | 提供 `quickControl` 与 `dockFlashAlerts` 服务 |
+| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | 提供 `quickControl` 与 `dshFlashAlerts` 服务 |
 | `@deepseek-ai/dsh-client-locale` | client inject | 官方 `locale` 服务，本插件的中英文表就注册在它上面（只用于声明加载顺序；缺失时退化为按浏览器语言显示） |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer，可选 | 仅工作台模式需要 |
 | `@deepseek-ai/schemastery` | 直接依赖 | 设置 schema（`volatile()`） |
@@ -190,7 +190,7 @@ withPluginContext('my-plugin', () => { /* 这里的 fetch() / http.request() 都
 dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
 
-需要 **dsh-flash ≥ 1.0**：它提供 `quickControl`、`dockFlashAlerts` 服务与 `dock-flash:ready` 事件，任何 1.x 都满足。dock-base 工作台里的面板 UI 来自 `dock-flash` v3 适配器（它把核心的面板挂载进工作台）。安装后请重启 DSH。
+需要 **dsh-flash ≥ 1.0**：它提供 `quickControl`、`dshFlashAlerts` 服务与 `dsh-flash:ready` 事件，任何 1.x 都满足。dock-base 工作台里的面板 UI 来自 `dock-flash` v3 适配器（它把核心的面板挂载进工作台）。安装后请重启 DSH。
 
 `cordis.patch.yml` 只插入宿主行。注意它的 `name` 是**包名**，通过 profile 的 `node_modules` 解析，**绝不是相对路径**。
 

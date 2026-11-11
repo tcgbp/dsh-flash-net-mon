@@ -49,19 +49,19 @@ omitted.
 
 | Registration | Through |
 | --- | --- |
-| Alert provider `dsh-flash-net-mon:network-alert` (heartbeat) | `ctx.get('dockFlashAlerts').registerProvider()` |
-| Alert provider `dsh-flash-net-mon:network-audit` (audit alerts) | `ctx.get('dockFlashAlerts').registerProvider()` |
+| Alert provider `dsh-flash-net-mon:network-alert` (heartbeat) | `ctx.get('dshFlashAlerts').registerProvider()` |
+| Alert provider `dsh-flash-net-mon:network-audit` (audit alerts) | `ctx.get('dshFlashAlerts').registerProvider()` |
 | Panel switch `dsh-flash-net-mon:monitor-network` | `ctx.get('quickControl').registerSwitch()` |
 
 Switch properties: `type: 'toggle'`, `group: 'system'`, `cluster: 'system-alerts'`,
 `order: 60`, `icon: 'signal'`. Its **visibility follows dsh-flash's
-`dock-flash:system-alerts` master toggle** — with the alert registry switched off,
+`dsh-flash:system-alerts` master toggle** — with the alert registry switched off,
 this switch has nothing to drive. Its subtitle carries the current on/off state, and
 the plugin notifies the row to re-render when that state changes.
 
-> **Dual discovery.** `ctx.get('quickControl')` / `ctx.get('dockFlashAlerts')` resolve
+> **Dual discovery.** `ctx.get('quickControl')` / `ctx.get('dshFlashAlerts')` resolve
 > asynchronously, so registration has three routes: listening for the
-> `dock-flash:ready` event (for when dsh-flash loads after us), a synchronous
+> `dsh-flash:ready` event (for when dsh-flash loads after us), a synchronous
 > `ctx.get()` check (for when it loaded before us), and a short fallback poll — up to
 > 15 attempts, 200 ms apart. The first one to succeed sets `_registered`, so nothing
 > registers twice.
@@ -330,7 +330,7 @@ Behaviour worth knowing:
 | Package | Type | Purpose |
 | --- | --- | --- |
 | `@deepseek-ai/cordis` | peer | the plugin framework |
-| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | supplies the `quickControl` and `dockFlashAlerts` services |
+| `dsh-flash` `>=1.0.0-0 <2.0.0-0` | peer | supplies the `quickControl` and `dshFlashAlerts` services |
 | `@deepseek-ai/dsh-client-locale` | client inject | the official `locale` service this plugin registers its zh/en dictionaries with (declared for load order; absence degrades to the browser-language fallback) |
 | `dock-base` `>=0.1.2-0 <2.0.0-0` | peer, optional | workbench mode only |
 | `@deepseek-ai/schemastery` | dependency | the settings schema (`volatile()`) |
@@ -346,7 +346,7 @@ dsh plugin --profile <profile> add dsh-flash-net-mon
 ```
 
 Requires **dsh-flash ≥ 1.0** — it supplies the `quickControl` and
-`dockFlashAlerts` services and the `dock-flash:ready` event, and any 1.x satisfies it.
+`dshFlashAlerts` services and the `dsh-flash:ready` event, and any 1.x satisfies it.
 The dock-base workbench UI comes from the `dock-flash` v3 adapter, which mounts the
 core's panel into the workbench.
 Restart DSH after installing.
