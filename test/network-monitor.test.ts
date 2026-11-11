@@ -81,6 +81,40 @@ test('trusted plugin zeroes risk even for unknown host', () => {
   assert.equal(rec(m, {}, 'my-plugin').risk, 0)
 })
 
+// The user's #1 complaint: a high-risk request recorded BEFORE the host was
+// whitelisted keeps its original high risk in the ring buffer (the scorer only
+// zeroes risk at record time), so the live trust check MUST silence it again.
+// The audit panel's alerts tab and the /network-alerts feed share this same
+// rule: after the user adds a host/plugin, its stale entries stop surfacing.
+test('#whitelist: adding a host silences its already-recorded high-risk entry', () => {
+  const m = new NetworkMonitor(100)
+  const e = rec(m) // recorded before trust → keeps its suspect risk (45)
+  assert.equal(e.risk, 45)
+  assert.ok(!(m.isTrusted(e.host) || m.isTrustedPlugin(e.pluginId)))
+  m.setUserTrusted([e.host])
+  assert.ok(m.isTrusted(e.host) || m.isTrustedPlugin(e.pluginId),
+    'a just-whitelisted host must suppress its stale alert entry')
+})
+
+test('#whitelist: an apex entry silences stale subdomain entries too', () => {
+  const m = new NetworkMonitor(100)
+  const e = rec(m, { url: 'https://api.example.com/x' }) // host: api.example.com
+  assert.equal(e.risk, 45)
+  m.setUserTrusted(['example.com']) // apex covers subdomains
+  assert.ok(m.isTrusted(e.host),
+    'apex trust must cover the pre-whitelist subdomain entry')
+})
+
+test('#whitelist: a stale unknown-host entry is silenced by the plugin whitelist', () => {
+  const m = new NetworkMonitor(100)
+  const e = rec(m, {}, '@earendil-works/pi-ai')
+  assert.equal(e.risk, 45)
+  assert.equal(m.isTrustedPlugin('@earendil-works/pi-ai'), false)
+  m.setPluginTrusted(['@earendil-works/pi-ai'])
+  assert.ok(m.isTrusted(e.host) || m.isTrustedPlugin(e.pluginId),
+    'a whitelisted plugin must suppress the stale entry even for an unknown host')
+})
+
 test('#1: trusted origin redirected to an untrusted host scores 60', () => {
   const m = new NetworkMonitor(100)
   m.setUserTrusted(['trusted.example'])
