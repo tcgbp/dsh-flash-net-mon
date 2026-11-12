@@ -418,7 +418,7 @@ tarball the dsh-market entry points at.
   `https.request` (the path a plugin uses when it talks HTTP directly instead of through
   fetch). A WebSocket is opened with a first HTTP Upgrade request, so `ws`-style
   connections are captured as an Upgrade entry too. Turning the switch off restores all
-  three entries and the `__dockFlashTraced` mark prevents a double wrapper after a hot
+  three entries and the `dshFlashTraced` mark prevents a double wrapper after a hot
   reload or a repeated `apply()`. Neither wrapper reads or mutates request/response
   bodies — only metadata.
 - **Per-instance state**: the auditor keeps its monitor, tracer-restore hooks and

@@ -1003,7 +1003,7 @@ function _contentLengthOf(headers) {
 function installRequestTracer(runtime) {
     const origFetch = globalThis.fetch;
     // Guard against double-install on hot reload / re-apply.
-    if (!origFetch || origFetch.__dockFlashTraced)
+    if (!origFetch || origFetch.dshFlashTraced)
         return () => { };
     const wrap = async (input, init) => {
         const method = (init && init.method) || (typeof input === 'string' ? 'GET' : (input && input.method) || 'GET');
@@ -1056,7 +1056,7 @@ function installRequestTracer(runtime) {
             throw e;
         }
     };
-    wrap.__dockFlashTraced = true;
+    wrap.dshFlashTraced = true;
     globalThis.fetch = wrap;
     runtime.restoreFetch = () => {
         if (globalThis.fetch === wrap)
@@ -1085,7 +1085,7 @@ export function installHttpTracer(runtime = mkRuntime()) {
     // Keep the originals so dispose can restore exactly what we replaced.
     const mods = [nodeHttp, nodeHttps];
     const origs = [nodeHttp.request, nodeHttps.request];
-    if (nodeHttp.request.__dockFlashTraced)
+    if (nodeHttp.request.dshFlashTraced)
         return () => { };
     for (const mod of mods) {
         const orig = mod.request;
@@ -1148,11 +1148,11 @@ export function installHttpTracer(runtime = mkRuntime()) {
             catch (_) { }
             return req;
         };
-        mod.request.__dockFlashTraced = true;
+        mod.request.dshFlashTraced = true;
     }
     runtime.restoreHttp = () => {
         for (let i = 0; i < mods.length; i++) {
-            if (mods[i].request && mods[i].request.__dockFlashTraced) {
+            if (mods[i].request && mods[i].request.dshFlashTraced) {
                 mods[i].request = origs[i];
             }
         }
@@ -1237,7 +1237,7 @@ export function apply(ctx, config) {
     const reconfigureAudit = () => {
         if (config.netAuditEnabled.get()) {
             // Enabled: ensure the monitor exists, refresh cap/whitelist, and install
-            // the tracer once. Both `runtime.restoreFetch === null` and `__dockFlashTraced`
+            // the tracer once. Both `runtime.restoreFetch === null` and `dshFlashTraced`
             // are kept as guards — the latter also protects against another plugin
             // having wrapped fetch (installRequestTracer checks it again internally).
             if (!runtime.monitor)
@@ -1254,7 +1254,7 @@ export function apply(ctx, config) {
             }
             catch (_) { }
             runtime.monitor.setEndpointTrusted(runtime.endpoints);
-            if (runtime.restoreFetch === null && !globalThis.fetch?.__dockFlashTraced) {
+            if (runtime.restoreFetch === null && !globalThis.fetch?.dshFlashTraced) {
                 installRequestTracer(runtime);
             }
             if (runtime.restoreHttp === null) {

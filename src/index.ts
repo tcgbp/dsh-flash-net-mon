@@ -1082,7 +1082,7 @@ function _contentLengthOf(headers: unknown): number | undefined {
 function installRequestTracer(runtime: MonitorRuntime): () => void {
   const origFetch = globalThis.fetch
   // Guard against double-install on hot reload / re-apply.
-  if (!origFetch || (origFetch as any).__dockFlashTraced) return () => {}
+  if (!origFetch || (origFetch as any).dshFlashTraced) return () => {}
   const wrap: typeof fetch = async (input, init) => {
     const method = (init && init.method) || (typeof input === 'string' ? 'GET' : (input && (input as Request).method) || 'GET')
     const url = typeof input === 'string' ? input : (input && (input as Request).url) || ''
@@ -1128,7 +1128,7 @@ function installRequestTracer(runtime: MonitorRuntime): () => void {
       throw e
     }
   }
-  ;(wrap as any).__dockFlashTraced = true
+  ;(wrap as any).dshFlashTraced = true
   ;(globalThis as any).fetch = wrap
   runtime.restoreFetch = () => {
     if ((globalThis as any).fetch === wrap) (globalThis as any).fetch = origFetch
@@ -1157,7 +1157,7 @@ export function installHttpTracer(runtime: MonitorRuntime = mkRuntime()): () => 
   // Keep the originals so dispose can restore exactly what we replaced.
   const mods = [nodeHttp as any, nodeHttps as any]
   const origs = [nodeHttp.request, nodeHttps.request]
-  if ((nodeHttp.request as any).__dockFlashTraced) return () => {}
+  if ((nodeHttp.request as any).dshFlashTraced) return () => {}
   for (const mod of mods) {
     const orig = mod.request
     mod.request = function (...args: any[]) {
@@ -1210,11 +1210,11 @@ export function installHttpTracer(runtime: MonitorRuntime = mkRuntime()): () => 
       } catch (_) {}
       return req
     }
-    ;(mod.request as any).__dockFlashTraced = true
+    ;(mod.request as any).dshFlashTraced = true
   }
   runtime.restoreHttp = () => {
     for (let i = 0; i < mods.length; i++) {
-      if (mods[i].request && (mods[i].request as any).__dockFlashTraced) {
+      if (mods[i].request && (mods[i].request as any).dshFlashTraced) {
         mods[i].request = origs[i]
       }
     }
@@ -1297,7 +1297,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
   const reconfigureAudit = () => {
     if (config.netAuditEnabled.get()) {
       // Enabled: ensure the monitor exists, refresh cap/whitelist, and install
-      // the tracer once. Both `runtime.restoreFetch === null` and `__dockFlashTraced`
+      // the tracer once. Both `runtime.restoreFetch === null` and `dshFlashTraced`
       // are kept as guards — the latter also protects against another plugin
       // having wrapped fetch (installRequestTracer checks it again internally).
       if (!runtime.monitor) runtime.monitor = new NetworkMonitor(config.netLogCap.get() || DEFAULT_NET_LOG_CAP, persistDir)
@@ -1310,7 +1310,7 @@ export function apply(ctx: Context, config: NetMonConfig) {
       // had no live monitor to hand the list to.
       try { refreshConfiguredEndpoints(runtime, ctx.get ? ctx.get('settings') : null) } catch (_) {}
       runtime.monitor.setEndpointTrusted(runtime.endpoints)
-      if (runtime.restoreFetch === null && !(globalThis as any).fetch?.__dockFlashTraced) {
+      if (runtime.restoreFetch === null && !(globalThis as any).fetch?.dshFlashTraced) {
         installRequestTracer(runtime)
       }
       if (runtime.restoreHttp === null) {
